@@ -1,0 +1,279 @@
+---
+title: ".off()"
+description: "Unsubscribe from realtime updates and clean up event listeners"
+---
+
+## Overview
+
+The `.off()` method unsubscribes from realtime updates by removing event listeners. This is essential for preventing memory leaks and stopping unwanted callbacks when you no longer need to listen to data changes.
+
+## Syntax
+
+```javascript
+gun.get(key).on(callback).off()
+```
+
+## Usage
+
+### Basic unsubscribe
+
+```javascript
+const ref = gun.get('messages').on(function(data){
+  console.log('New message:', data)
+})
+
+// Later, stop listening
+ref.off()
+```
+
+### Event object pattern
+
+```javascript
+gun.get('status').on(function(data, key, msg, event){
+  console.log('Status:', data)
+  
+  // Unsubscribe from within callback
+  if(data.complete){
+    event.off()
+  }
+})
+```
+
+### Clean up on component unmount
+
+```javascript
+// React example
+function MessageList() {
+  useEffect(() => {
+    const ref = gun.get('messages').map().on((msg) => {
+      setMessages(prev => [...prev, msg])
+    })
+    
+    // Cleanup function
+    return () => ref.off()
+  }, [])
+}
+```
+
+## Implementation details
+
+From `~/workspace/source/src/on.js:51`:
+
+```javascript
+Gun.chain.off = function(){
+  var gun = this, at = gun._, tmp;
+  var cat = at.back;
+  if(!cat){ return }
+  at.ack = 0; // so can resubscribe.
+  if(tmp = cat.next){
+    if(tmp[at.get]){
+      delete tmp[at.get];
+    }
+  }
+  if (tmp = cat.any) {
+    delete cat.any;
+    cat.any = {};
+  }
+  if(tmp = cat.ask){
+    delete tmp[at.get];
+  }
+}
+```
+
+## When to use .off()
+
+<CardGroup cols={2}>
+  <Card title="Component unmount" icon="arrow-right-from-bracket">
+    Always call `.off()` when components unmount to prevent memory leaks
+  </Card>
+  <Card title="Conditional listening" icon="filter">
+    Stop listening when certain conditions are met (e.g., data is complete)
+  </Card>
+  <Card title="Route changes" icon="route">
+    Unsubscribe when navigating away from a page or view
+  </Card>
+  <Card title="Resource cleanup" icon="broom">
+    Clean up subscriptions before creating new ones on the same reference
+  </Card>
+</CardGroup>
+
+## Comparison: .on() vs .once()
+
+| Feature | `.on()` + `.off()` | `.once()` |
+|---------|-------------------|----------|
+| **Subscription** | Continuous | One-time |
+| **Cleanup** | Manual with `.off()` | Automatic |
+| **Use case** | Realtime updates | Initial data load |
+| **Memory** | Must manage | Self-cleaning |
+
+## Best practices
+
+<Tip>
+**Always clean up subscriptions** - Call `.off()` in cleanup functions to prevent memory leaks and unexpected behavior.
+</Tip>
+
+### Store references
+
+```javascript
+// Good - store reference for cleanup
+const subscription = gun.get('data').on(callback)
+later: subscription.off()
+
+// Bad - can't unsubscribe
+gun.get('data').on(callback)
+// No way to call .off() later!
+```
+
+### Framework integration
+
+```javascript
+// Vue
+export default {
+  data() {
+    return { subscription: null }
+  },
+  mounted() {
+    this.subscription = gun.get('data').on(this.handleData)
+  },
+  beforeUnmount() {
+    if(this.subscription) {
+      this.subscription.off()
+    }
+  }
+}
+
+// Angular
+export class MyComponent implements OnDestroy {
+  subscription: any;
+  
+  ngOnInit() {
+    this.subscription = gun.get('data').on(data => {
+      this.data = data;
+    });
+  }
+  
+  ngOnDestroy() {
+    if(this.subscription) {
+      this.subscription.off();
+    }
+  }
+}
+```
+
+## Common patterns
+
+### Conditional unsubscribe
+
+```javascript
+gun.get('task').on(function(task, key, msg, event){
+  updateUI(task)
+  
+  // Stop listening when task is complete
+  if(task.status === 'completed'){
+    event.off()
+    console.log('Task completed, stopped listening')
+  }
+})
+```
+
+### Multiple subscriptions
+
+```javascript
+const subs = []
+
+// Subscribe to multiple keys
+['user', 'settings', 'preferences'].forEach(key => {
+  subs.push(
+    gun.get(key).on(data => console.log(key, data))
+  )
+})
+
+// Unsubscribe from all
+function cleanup() {
+  subs.forEach(sub => sub.off())
+  subs.length = 0
+}
+```
+
+### Resubscribe pattern
+
+```javascript
+let currentSub = null
+
+function subscribeToUser(userId) {
+  // Clean up previous subscription
+  if(currentSub) {
+    currentSub.off()
+  }
+  
+  // Subscribe to new user
+  currentSub = gun.get('users').get(userId).on(data => {
+    displayUser(data)
+  })
+}
+```
+
+## Troubleshooting
+
+### Memory leaks
+
+<Warning>
+Forgetting to call `.off()` causes memory leaks. Symptoms include:
+- Increasing memory usage over time
+- Multiple callbacks firing for the same event
+- Slow performance after navigation
+</Warning>
+
+```javascript
+// Problem: Memory leak
+function loadMessages() {
+  gun.get('messages').map().on(msg => {
+    addToList(msg)
+  })
+  // No cleanup!
+}
+
+// Solution: Store and clean up
+let messagesSub = null
+
+function loadMessages() {
+  if(messagesSub) messagesSub.off()
+  messagesSub = gun.get('messages').map().on(msg => {
+    addToList(msg)
+  })
+}
+
+function cleanup() {
+  if(messagesSub) messagesSub.off()
+}
+```
+
+### Double subscription
+
+```javascript
+// Problem: Subscribing multiple times
+button.onclick = () => {
+  gun.get('counter').on(updateDisplay) // Creates new subscription each click!
+}
+
+// Solution: Track subscription state
+let isSubscribed = false
+
+button.onclick = () => {
+  if(!isSubscribed) {
+    gun.get('counter').on(updateDisplay)
+    isSubscribed = true
+  }
+}
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title=".on()" icon="wave-pulse" href="/api/on">
+    Subscribe to realtime updates
+  </Card>
+  <Card title=".once()" icon="1" href="/api/once">
+    Read data one time without subscribing
+  </Card>
+</CardGroup>
