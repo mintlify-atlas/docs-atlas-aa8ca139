@@ -1,0 +1,146 @@
+{
+  "projectType": "framework",
+  "projectName": "GUN",
+  "projectDescription": "A realtime, decentralized, offline-first, graph data synchronization engine and protocol.",
+  "theme": "aspen",
+  "primaryColor": "#1a73e8",
+  "lightColor": "#4285f4",
+  "darkColor": "#0d47a1",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/graph-database",
+              "concepts/decentralization",
+              "concepts/realtime-sync",
+              "concepts/offline-first",
+              "concepts/crdt"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/gun-constructor",
+              "api/get",
+              "api/put",
+              "api/on",
+              "api/once",
+              "api/set",
+              "api/map",
+              "api/val",
+              "api/back"
+            ]
+          },
+          {
+            "group": "Security (SEA)",
+            "pages": [
+              "sea/overview",
+              "sea/user",
+              "sea/auth",
+              "sea/pair",
+              "sea/encrypt",
+              "sea/decrypt",
+              "sea/sign",
+              "sea/verify",
+              "sea/certify",
+              "sea/work"
+            ]
+          },
+          {
+            "group": "Storage Adapters",
+            "pages": [
+              "storage/overview",
+              "storage/radisk",
+              "storage/rindexed",
+              "storage/s3",
+              "storage/custom-adapters"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/networking",
+              "advanced/conflict-resolution",
+              "advanced/performance",
+              "advanced/cap-theorem",
+              "advanced/deployment"
+            ]
+          },
+          {
+            "group": "Integration Guides",
+            "pages": [
+              "integrations/react",
+              "integrations/react-native",
+              "integrations/vue",
+              "integrations/angular",
+              "integrations/nodejs",
+              "integrations/electron"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/overview",
+              "examples/chat-app",
+              "examples/todo-app",
+              "examples/collaborative-editor",
+              "examples/p2p-networking"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Realtime P2P state synchronization",
+    "Graph data structure supporting key/value, tables, documents, and relations",
+    "Local-first and offline-capable",
+    "Decentralized architecture with no single point of failure",
+    "End-to-end encryption via SEA (Security, Encryption, Authorization)",
+    "CRDT-based conflict resolution",
+    "Cross-platform (Browser, Node.js, React Native, Electron)",
+    "Pluggable storage adapters (IndexedDB, LocalStorage, S3, custom)",
+    "High performance (20M+ API ops/sec)",
+    "Lightweight (9KB gzipped)"
+  ],
+  "publicApiSurface": [
+    "Gun(options)",
+    "gun.get(key)",
+    "gun.put(data, callback)",
+    "gun.on(callback)",
+    "gun.once(callback)",
+    "gun.set(data)",
+    "gun.map(callback)",
+    "gun.val(callback)",
+    "gun.back()",
+    "gun.user()",
+    "user.create(alias, password, callback)",
+    "user.auth(alias, password, callback)",
+    "user.leave()",
+    "SEA.pair()",
+    "SEA.encrypt(data, key)",
+    "SEA.decrypt(data, key)",
+    "SEA.sign(data, pair)",
+    "SEA.verify(data, pair)",
+    "SEA.certify(certificate, pair)",
+    "SEA.work(data, salt)",
+    "SEA.secret(key, pair)"
+  ]
+}
