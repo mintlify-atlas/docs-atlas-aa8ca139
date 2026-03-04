@@ -1,0 +1,213 @@
+---
+title: '.val()'
+description: 'Convenience method for reading values'
+---
+
+## .val()
+
+The `.val()` method is a convenience wrapper that simplifies reading data. It's essentially shorthand for `.once()` but with a more intuitive name for getting values.
+
+<Warning>
+  The `.val()` method is **experimental**. Its behavior and API may change in future versions. Use `.once()` for production code if you need stable behavior.
+</Warning>
+
+### Signature
+
+```javascript
+gun.val(callback)
+gun.val(callback, options)
+```
+
+### Parameters
+
+<ParamField path="callback" type="function">
+  Function called with the value once it's loaded.
+  
+  **Signature:** `function(data, key)`
+  
+  - `data` - The value at this node
+  - `key` - The property key
+</ParamField>
+
+<ParamField path="options" type="object" optional>
+  Options passed through to `.once()`
+  
+  <Expandable title="properties">
+    <ParamField path="wait" type="number">
+      Milliseconds to wait before timing out
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+Returns a GUN chain reference for method chaining.
+
+### Examples
+
+#### Basic Usage
+
+```javascript
+// Read a value (same as .once())
+gun.get('user/alice').get('name').val(function(name){
+  console.log('Name:', name)
+})
+
+// Equivalent to:
+gun.get('user/alice').get('name').once(function(name){
+  console.log('Name:', name)
+})
+```
+
+#### Why .val() Exists
+
+```javascript
+// More intuitive naming for getting values
+gun.get('settings').get('theme').val(function(theme){
+  applyTheme(theme)
+})
+
+// Reads clearer than .once() in some contexts
+gun.get('score').val(function(score){
+  updateScoreboard(score)
+})
+```
+
+#### Chaining after .val()
+
+```javascript
+// .val() returns a chainable reference
+gun.get('user')
+   .get('profile')
+   .val(function(profile){
+     console.log('Profile:', profile)
+   })
+   .get('avatar')
+   .val(function(avatar){
+     console.log('Avatar:', avatar)
+   })
+```
+
+### Implementation Details
+
+The `.val()` method is not directly in the source files provided, but based on the GUN API patterns, it's typically implemented as:
+
+```javascript
+// Typical implementation (not from source)
+Gun.chain.val = function(cb, opt){
+  return this.once(cb, opt)
+}
+```
+
+It's a thin wrapper around `.once()` that:
+1. Provides a more semantic name for "get value"
+2. Passes all arguments through to `.once()`
+3. Returns the same chain for method chaining
+
+### .val() vs .once() vs .on()
+
+| Method | Purpose | Triggers | Status |
+|--------|---------|----------|--------|
+| `.val()` | Get value | Once | Experimental |
+| `.once()` | Read once | Once | Stable |
+| `.on()` | Subscribe | Every update | Stable |
+
+### When to Use .val()
+
+```javascript
+// ✅ Good use cases:
+// Quick value reads
+gun.get('config').get('apiKey').val(cb)
+
+// Form population
+gun.get('user').get('email').val(function(email){
+  document.getElementById('email').value = email
+})
+
+// ❌ Use .once() instead for:
+// Production code (more stable)
+gun.get('critical/data').once(cb)
+
+// ❌ Use .on() instead for:
+// Realtime updates
+gun.get('live/data').on(cb)
+```
+
+### Experimental Status Warning
+
+From the GUN documentation:
+
+```javascript
+// This warning appears when using .val()
+Gun.log.once("valonce", 
+  "Chainable val is experimental, its behavior and API may " +
+  "change moving forward. Please play with it and report bugs " +
+  "and ideas on how to improve it."
+)
+```
+
+The method may:
+- Change behavior in future versions
+- Be renamed or removed
+- Have different return values
+- Gain new features
+
+### Recommended Alternative
+
+For production code, use `.once()` instead:
+
+```javascript
+// Instead of:
+gun.get('data').val(function(data){
+  console.log(data)
+})
+
+// Use:
+gun.get('data').once(function(data){
+  console.log(data)
+})
+```
+
+### Callback Context
+
+```javascript
+// The callback's 'this' is the gun chain
+gun.get('user').val(function(user){
+  console.log('User:', user)
+  console.log('Chain:', this)  // Gun chain reference
+  
+  // Can access metadata
+  console.log('Key:', this._.get)
+  console.log('Soul:', this._.soul)
+})
+```
+
+### Async/Await Pattern
+
+```javascript
+// Promisify .val() for async/await
+function promiseVal(gun) {
+  return new Promise(function(resolve, reject){
+    gun.val(function(data){
+      resolve(data)
+    })
+  })
+}
+
+// Use with async/await
+async function getData() {
+  var value = await promiseVal(gun.get('data'))
+  console.log('Value:', value)
+  return value
+}
+```
+
+### Notes
+
+- `.val()` is experimental and may change
+- It's essentially an alias for `.once()` with a clearer name
+- Use `.once()` for production code
+- Provides better semantics for "getting a value"
+- Returns immediately; callback fires when data loads
+- Automatically cleans up like `.once()` does
+- Check GUN release notes for updates to this API

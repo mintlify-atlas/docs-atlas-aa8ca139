@@ -1,0 +1,534 @@
+---
+title: CAP Theorem
+description: Understand CAP theorem tradeoffs in GUN and how it handles consistency, availability, and partition tolerance
+---
+
+The CAP theorem states that distributed systems can only guarantee two of three properties: **Consistency**, **Availability**, and **Partition Tolerance**. GUN makes specific tradeoffs to optimize for real-world, decentralized applications.
+
+## GUN's CAP Tradeoffs
+
+GUN chooses **Availability** and **Partition Tolerance** over strong consistency:
+
+- ✅ **Availability**: Always accepts reads and writes
+- ✅ **Partition Tolerance**: Continues operating during network splits
+- ⚠️ **Consistency**: Eventual consistency (not strong consistency)
+
+This makes GUN an **AP system** in CAP theorem terminology.
+
+## Why AP Over CP?
+
+### Real-World Networks Are Unreliable
+
+Network partitions are not rare edge cases - they're common in:
+- Mobile applications (airplane mode, poor signal)
+- Geographic distribution (cross-continent latency)
+- Peer-to-peer networks (dynamic topology)
+- IoT devices (intermittent connectivity)
+
+Source: GUN is designed for [offline-first, decentralized applications](~/workspace/source/README.md:13)
+
+### Offline-First Architecture
+
+GUN applications work offline by default:
+
+```javascript
+const gun = Gun(); // No peers - fully local
+
+// Works offline
+gun.get('todo').put({
+  title: 'Buy milk',
+  done: false
+});
+
+// When back online, changes sync automatically
+gun.opt({peers: ['https://relay.example.com/gun']});
+```
+
+### Eventual Consistency Model
+
+All peers eventually converge to the same state:
+
+```javascript
+// Peer A (offline)
+gunA.get('doc').put({title: 'Hello'});
+
+// Peer B (offline)
+gunB.get('doc').put({subtitle: 'World'});
+
+// When peers reconnect:
+// Both converge to: {title: 'Hello', subtitle: 'World'}
+```
+
+Source: GUN uses [state-based CRDTs](~/workspace/source/src/state.js) for conflict resolution
+
+## Understanding Eventual Consistency
+
+### What Is Eventual Consistency?
+
+Eventual consistency guarantees that:
+1. All replicas will eventually have the same data
+2. If no new updates are made, all reads will eventually return the same value
+3. There's no guarantee about *when* consistency will be achieved
+
+### Consistency Guarantees
+
+GUN provides these guarantees:
+
+- **Monotonic reads**: You'll never see older data after seeing newer data from the same source
+- **Read your writes**: You'll always see your own writes
+- **Causal consistency**: If operation B depends on operation A, all peers see them in order
+
+### Consistency Timeline
+
+```
+Time →
+
+Peer A: [write v1] ─────────→ [read v1] ───→ [read v2]
+                                              
+Peer B: ──────────→ [write v2] ───→ [sync] ─→ [read v2]
+                                      ↑
+Peer C: ───────────────────→ [read v1] [sync] [read v2]
+
+Eventually all peers converge to v2
+```
+
+## Handling Network Partitions
+
+### Split Brain Scenario
+
+When the network partitions, each side continues operating:
+
+```javascript
+// Network splits into two groups
+
+// Group A (Peers 1, 2, 3)
+gun.get('counter').put(10);
+
+// Group B (Peers 4, 5, 6)
+gun.get('counter').put(20);
+
+// When network heals: conflict resolution kicks in
+// Result: 10 or 20 (last-write-wins based on state timestamp)
+```
+
+Source: [Conflict resolution](~/workspace/source/src/state.js) uses state timestamps
+
+### Partition Detection
+
+GUN doesn't explicitly detect partitions - it assumes partitions are always possible:
+
+```javascript
+// Peers track connection state
+gun.on('hi', peer => {
+  console.log('Connected to peer:', peer.id);
+});
+
+gun.on('bye', peer => {
+  console.log('Disconnected from peer:', peer.id);
+});
+```
+
+Source: `~/workspace/source/src/mesh.js:266-294`
+
+### Healing After Partition
+
+```javascript
+// Automatic resync when connection restored
+// 1. Peers exchange subscription info
+// 2. Missing data is requested
+// 3. Conflicts are resolved using state timestamps
+// 4. All peers converge
+```
+
+Source: `~/workspace/source/src/mesh.js:337-345`
+
+## Consistency Levels
+
+### Local Consistency (Immediate)
+
+```javascript
+gun.get('data').put({value: 42});
+
+gun.get('data').once(data => {
+  console.log(data.value); // 42 - immediate local read
+});
+```
+
+### Peer Consistency (Milliseconds to Seconds)
+
+```javascript
+// Peer A writes
+gunA.get('data').put({value: 42});
+
+// Peer B reads (over network)
+gunB.get('data').on(data => {
+  // Receives update after network propagation
+  console.log(data.value); // 42 (eventually)
+});
+```
+
+### Global Consistency (Seconds to Minutes)
+
+In large mesh networks:
+- Updates propagate peer-to-peer
+- Convergence time depends on network topology
+- Updates may take multiple hops to reach all peers
+
+## Strong Consistency vs Eventual Consistency
+
+### Strong Consistency (NOT GUN)
+
+```javascript
+// Traditional database (e.g., PostgreSQL)
+// Requires distributed consensus (Paxos, Raft)
+// Blocks during network partitions
+
+db.beginTransaction();
+  db.write({value: 42});  // Blocks until all replicas confirm
+  db.commit();             // Blocks until consensus reached
+// Either succeeds everywhere or fails everywhere
+```
+
+### Eventual Consistency (GUN)
+
+```javascript
+// GUN - always available
+gun.get('data').put({value: 42}); // Never blocks
+
+// Conflict resolution is automatic and deterministic
+gun.get('data').on(data => {
+  // May see different values during partition
+  // Eventually converges to consistent state
+});
+```
+
+## When Consistency Matters
+
+### Use Cases That Need Strong Consistency
+
+❌ **Not ideal for GUN**:
+- Financial transactions (double-spend prevention)
+- Inventory management (overselling prevention)
+- Monotonic counters (must always increment)
+- Unique constraints (username uniqueness)
+
+### Use Cases That Work With Eventual Consistency
+
+✅ **Perfect for GUN**:
+- Social media posts and comments
+- Collaborative documents
+- Chat messages
+- User profiles
+- Gaming leaderboards (approximate)
+- Analytics and metrics (approximate)
+- Content management systems
+- Real-time dashboards
+
+## Working Around Consistency Limitations
+
+### Optimistic UI Updates
+
+```javascript
+function updateUI(newValue){
+  // Update UI immediately (optimistic)
+  displayValue(newValue);
+  
+  // Persist to GUN
+  gun.get('data').put(newValue);
+  
+  // Handle conflicts
+  gun.get('data').on(actualValue => {
+    if(actualValue !== newValue){
+      // Conflict occurred - update UI with winning value
+      displayValue(actualValue);
+      notifyUser('Your change was overwritten');
+    }
+  });
+}
+```
+
+### Idempotent Operations
+
+Design operations that can be safely retried:
+
+```javascript
+// ❌ BAD: Non-idempotent
+gun.get('counter').once(val => {
+  gun.get('counter').put(val + 1); // Race condition!
+});
+
+// ✅ GOOD: Idempotent (using sets)
+const id = Gun.text.random();
+gun.get('counters').get(id).put(1);
+
+// Count by summing the set
+let total = 0;
+gun.get('counters').map().once(val => {
+  total += val;
+});
+```
+
+### Application-Level Consensus
+
+Implement consensus in your application:
+
+```javascript
+// Leader election using timestamps
+function electLeader(){
+  const candidateId = gun.user().is.pub;
+  const timestamp = Gun.state();
+  
+  gun.get('leader-election').get(timestamp).put({
+    candidate: candidateId,
+    timestamp: timestamp
+  });
+  
+  // Wait for stabilization
+  setTimeout(() => {
+    gun.get('leader-election').once(elections => {
+      const sorted = Object.values(elections)
+        .sort((a, b) => b.timestamp - a.timestamp);
+      
+      const leader = sorted[0].candidate;
+      console.log('Leader elected:', leader);
+    });
+  }, 5000);
+}
+```
+
+### Conflict-Free Data Structures
+
+Use CRDTs that guarantee convergence:
+
+```javascript
+// Grow-only counter (G-Counter)
+function increment(amount = 1){
+  const peerId = gun.user().is.pub;
+  gun.get('counter').get(peerId).put({
+    count: Gun.state(),
+    amount: amount
+  });
+}
+
+function getTotal(callback){
+  let total = 0;
+  gun.get('counter').map().once(entry => {
+    total += entry.amount;
+    callback(total);
+  });
+}
+```
+
+## Availability Guarantees
+
+### Always Accept Writes
+
+GUN never blocks writes:
+
+```javascript
+// Works even without network
+const gun = Gun();
+gun.get('data').put({value: 42}); // Always succeeds locally
+```
+
+### Always Accept Reads
+
+Reads return the latest known data:
+
+```javascript
+// Returns local data immediately
+gun.get('data').once(data => {
+  console.log(data); // Latest local state
+});
+
+// Subscribe for updates
+gun.get('data').on(data => {
+  console.log(data); // Updates as network syncs
+});
+```
+
+### Graceful Degradation
+
+```javascript
+gun.on('hi', peer => {
+  // Connected to peer - full functionality
+  showOnlineIndicator();
+});
+
+gun.on('bye', peer => {
+  // Peer disconnected - still functional
+  showOfflineIndicator();
+});
+
+// Application continues working regardless
+```
+
+## Partition Tolerance
+
+### Mesh Network Resilience
+
+GUN's mesh architecture provides multiple paths:
+
+```
+Peer A ←→ Peer B
+  ↕         ↕
+Peer C ←→ Peer D
+
+// If A-B connection breaks:
+A → C → D → B (alternative path)
+```
+
+Source: `~/workspace/source/src/mesh.js` implements mesh routing
+
+### Relay Peers
+
+Relay peers improve partition tolerance:
+
+```javascript
+// Browser peers connect through relay
+const gun = Gun({
+  peers: [
+    'https://relay1.example.com/gun',
+    'https://relay2.example.com/gun', // Redundancy
+    'https://relay3.example.com/gun'
+  ]
+});
+```
+
+### AXE Protocol
+
+AXE (Advanced eXchange Engine) optimizes routing during partitions:
+
+```javascript
+const gun = Gun({
+  axe: true // Enabled by default
+});
+```
+
+Source: `~/workspace/source/lib/axe.js:13`
+
+AXE features:
+- **Smart routing**: Finds alternative paths during partitions
+- **Subscription tracking**: Routes updates to interested peers only
+- **Load balancing**: Distributes queries across available peers
+
+## Monitoring Consistency
+
+### Track Convergence Time
+
+```javascript
+const writes = new Map();
+
+gun.get('data').on(data => {
+  const writeTime = writes.get(data.id);
+  if(writeTime){
+    const convergenceTime = Date.now() - writeTime;
+    console.log('Converged in:', convergenceTime, 'ms');
+  }
+});
+
+function write(value){
+  const id = Gun.text.random();
+  writes.set(id, Date.now());
+  gun.get('data').put({id, value});
+}
+```
+
+### Detect Conflicts
+
+```javascript
+let lastState = {};
+
+gun.get('data').on(data => {
+  const currentState = data._['>'];
+  
+  Object.keys(currentState).forEach(key => {
+    if(lastState[key] && currentState[key] > lastState[key]){
+      const timeDiff = currentState[key] - lastState[key];
+      console.log(`Property '${key}' updated after ${timeDiff}ms`);
+    }
+  });
+  
+  lastState = {...currentState};
+});
+```
+
+### Measure Peer Lag
+
+```javascript
+gun.on('in', function(msg){
+  if(msg.DBG && msg.DBG.out){
+    const lag = Date.now() - msg.DBG.out;
+    console.log('Peer lag:', lag, 'ms');
+  }
+  this.to.next(msg);
+});
+```
+
+## Best Practices
+
+1. **Embrace eventual consistency**: Design for it, don't fight it
+2. **Use optimistic UI updates**: Show changes immediately
+3. **Handle conflicts gracefully**: Update UI when conflicts resolve
+4. **Design idempotent operations**: Safe to retry
+5. **Use CRDTs**: Conflict-free data structures
+6. **Monitor convergence**: Track how long sync takes
+7. **Provide feedback**: Show online/offline status
+8. **Test partition scenarios**: Simulate network failures
+9. **Implement retries**: For critical operations
+10. **Use multiple relay peers**: Improve partition tolerance
+
+## Comparison with Other Systems
+
+### PostgreSQL (CP)
+- Strong consistency
+- Blocks during partitions
+- Requires distributed consensus
+- Not offline-first
+
+### Cassandra (AP)
+- Eventual consistency (tunable)
+- Available during partitions
+- Partition-tolerant
+- Requires servers
+
+### GUN (AP)
+- Eventual consistency
+- Always available
+- Partition-tolerant
+- Truly decentralized (works in browsers)
+- Offline-first
+
+## Trade-off Summary
+
+| Property | GUN | Traditional DB |
+|----------|-----|----------------|
+| Consistency | Eventual | Strong |
+| Availability | Always | Blocks on partition |
+| Partition Tolerance | Yes | Yes (CP) or No (CA) |
+| Offline Support | Built-in | Requires special handling |
+| Latency | Low (local-first) | Higher (server round-trip) |
+| Scalability | Peer-to-peer | Vertical/Horizontal |
+| Conflict Resolution | Automatic (CRDT) | Application-handled |
+
+## When to Use GUN
+
+✅ **Use GUN when**:
+- Building offline-first applications
+- Need real-time collaboration
+- Want decentralized architecture
+- Eventual consistency is acceptable
+- Building P2P applications
+
+❌ **Don't use GUN when**:
+- Need strong consistency (financial transactions)
+- Require ACID guarantees
+- Need complex queries (joins, aggregations)
+- Building traditional CRUD apps
+
+## Next Steps
+
+- Implement [Conflict Resolution](/advanced/conflict-resolution) strategies
+- Optimize [Performance](/advanced/performance) for your use case
+- Configure [Networking](/advanced/networking) topology
+- Deploy to [Production](/advanced/deployment) with redundancy

@@ -1,0 +1,581 @@
+---
+title: "Offline-First"
+description: "Understanding GUN's local-first architecture, offline capabilities, and automatic synchronization"
+---
+
+## What is Offline-First?
+
+**Offline-first** means your application works fully offline, storing data locally first, then syncing to the network when available. GUN is designed with offline-first principles at its core:
+
+- ✅ Works completely offline
+- ✅ No connection required to read/write data
+- ✅ Automatic sync when back online
+- ✅ No code changes needed
+
+```javascript
+var gun = Gun();
+
+// Works offline!
+gun.get('note').put({text: 'Written offline'});
+
+// Works offline!
+gun.get('note').on(note => {
+  console.log(note.text); // 'Written offline'
+});
+
+// When network returns, automatically syncs
+```
+
+<Info>
+  Traditional databases require a connection to a server. GUN stores data locally first, making it **instantly available** without network latency.
+</Info>
+
+## Local-First Architecture
+
+### How It Works
+
+GUN stores data in **multiple layers**:
+
+```
+┌─────────────────────────────┐
+│   Application (Your Code)   │
+└──────────────┬──────────────┘
+               │
+       ┌───────▼────────┐
+       │  GUN In-Memory │  ← Fastest
+       └───────┬────────┘
+               │
+       ┌───────▼────────┐
+       │  localStorage  │  ← Persisted
+       └───────┬────────┘
+               │
+       ┌───────▼────────┐
+       │  IndexedDB     │  ← Large data
+       └───────┬────────┘
+               │
+       ┌───────▼────────┐
+       │  Network Mesh  │  ← Sync
+       └────────────────┘
+```
+
+1. **In-Memory**: Data lives in RAM for instant access
+2. **localStorage**: Persists < 5MB across browser restarts
+3. **IndexedDB**: Stores larger datasets (50MB+)
+4. **Network**: Syncs with other peers when online
+
+### Reading Data
+
+GUN reads from the **fastest available source**:
+
+```javascript
+gun.get('user').once(user => {
+  // Check order:
+  // 1. In-memory cache (< 1ms)
+  // 2. localStorage (< 5ms)
+  // 3. IndexedDB (< 20ms)
+  // 4. Network peers (> 50ms)
+  console.log(user);
+});
+```
+
+### Writing Data
+
+GUN writes to **all layers simultaneously**:
+
+```javascript
+gun.get('user').put({name: 'Alice'});
+
+// Immediately:
+// ✓ Updates in-memory cache
+// ✓ Queues write to localStorage
+// ✓ Queues write to IndexedDB (if available)
+// ✓ Broadcasts to network (if online)
+```
+
+<Note>
+  Writes are **non-blocking**. Your app continues immediately while GUN handles persistence in the background.
+</Note>
+
+## localStorage Adapter
+
+From `src/localStorage.js:15`, GUN automatically uses localStorage:
+
+```javascript
+Gun.on('create', function(root){
+  var opt = root.opt;
+  if(false === opt.localStorage){ return } // Disabled
+  
+  opt.prefix = opt.file || 'gun/';
+  var disk = JSON.parse(localStorage.getItem(opt.prefix)) || {};
+  
+  // Load from localStorage on startup
+  root.on('get', function(msg){
+    var soul = msg.get['#'];
+    var data = disk[soul];
+    Gun.on.get.ack(msg, data);
+  });
+  
+  // Save to localStorage on write
+  root.on('put', function(msg){
+    var put = msg.put;
+    var soul = put['#'];
+    disk[soul] = Gun.state.ify(disk[soul], put['.'], put['>'], put[':'], soul);
+    localStorage.setItem(opt.prefix, JSON.stringify(disk));
+  });
+});
+```
+
+### Browser Persistence
+
+```javascript
+var gun = Gun();
+
+// Write data
+gun.get('settings').put({theme: 'dark'});
+
+// Close browser, come back later
+// Data is still there!
+gun.get('settings').once(settings => {
+  console.log(settings.theme); // 'dark'
+});
+```
+
+### Storage Limits
+
+localStorage has a **5MB limit** (per origin):
+
+```javascript
+// Monitor storage usage
+gun.on('localStorage:error', function(ctx){
+  console.error('localStorage full!', ctx.err);
+  // Consider switching to IndexedDB adapter
+});
+```
+
+<Warning>
+  When localStorage is full, GUN logs an error but continues working in-memory. Data won't persist across browser restarts.
+</Warning>
+
+## IndexedDB for Large Data
+
+For datasets > 5MB, use the [RAD (Radix Storage) adapter](https://gun.eco/docs/RAD):
+
+```javascript
+// Include RAD adapter
+import 'gun/lib/radix';
+import 'gun/lib/radisk';
+import 'gun/lib/store';
+import 'gun/lib/rindexed'; // IndexedDB
+
+var gun = Gun();
+
+// Now supports 50MB+ storage
+gun.get('largeDataset').put(/* large data */);
+```
+
+IndexedDB provides:
+- **50MB+** storage (browser dependent, can be GBs)
+- Faster read/write than localStorage
+- Better performance for large datasets
+
+## Node.js Persistence
+
+On servers, GUN persists to the **file system**:
+
+```javascript
+// server.js
+const Gun = require('gun');
+const gun = Gun({
+  file: 'data.json' // Persists to this file
+});
+
+// Data automatically saved to data.json
+gun.get('users').get('alice').put({name: 'Alice'});
+```
+
+File storage is **unlimited** (bound only by disk space).
+
+## Offline Capabilities
+
+### Scenario 1: Start Offline
+
+```javascript
+var gun = Gun(); // No network configured
+
+// Still works!
+gun.get('todo').set({text: 'Buy milk', done: false});
+gun.get('todo').set({text: 'Walk dog', done: false});
+
+// Read works too
+gun.get('todo').map().on(item => {
+  console.log(item.text);
+});
+
+// Data stored in localStorage
+```
+
+### Scenario 2: Lose Connection
+
+```javascript
+var gun = Gun(['https://relay.example.com/gun']);
+
+// Connected, syncing
+gun.get('score').put(100);
+
+// Network drops...
+// GUN continues working!
+gun.get('score').put(200);
+gun.get('score').put(300);
+
+// Reads still work from localStorage
+gun.get('score').once(score => {
+  console.log(score); // 300
+});
+
+// When network returns, queued writes sync automatically
+```
+
+### Scenario 3: Sync After Offline
+
+```javascript
+// Device A goes offline
+gunA.get('doc').put({text: 'Version A'});
+
+// Device B goes offline
+gunB.get('doc').put({text: 'Version B'});
+
+// Both come back online
+// GUN syncs and resolves conflict using CRDT
+// Higher timestamp wins
+```
+
+<Info>
+  GUN uses **CRDTs** (Conflict-free Replicated Data Types) to automatically resolve conflicts when syncing. Learn more in [CRDT Concepts](/concepts/crdt).
+</Info>
+
+## Sync Strategies
+
+### Immediate Sync (Default)
+
+```javascript
+var gun = Gun(['https://relay.example.com/gun']);
+
+// Writes sync immediately when online
+gun.get('data').put({x: 1});
+// Broadcasts to network instantly
+```
+
+### Batched Sync
+
+```javascript
+// Queue multiple writes
+var batch = [];
+batch.push({key: 'a', value: 1});
+batch.push({key: 'b', value: 2});
+batch.push({key: 'c', value: 3});
+
+// Sync as batch
+batch.forEach(item => {
+  gun.get(item.key).put(item.value);
+});
+
+// GUN automatically batches messages
+// Sends as single network packet
+```
+
+From `src/mesh.js:38`, GUN batches messages:
+
+```javascript
+if('[' === tmp){ // Batch message
+  parse(raw, function(err, msg){
+    var P = opt.puff;
+    (function go(){
+      var i = 0, m; 
+      while(i < P && (m = msg[i++])){ 
+        mesh.hear(m, peer) 
+      }
+      msg = msg.slice(i);
+      if(!msg.length){ return }
+      puff(go, 0);
+    }());
+  });
+}
+```
+
+### Lazy Sync
+
+```javascript
+// Only sync specific data when needed
+function syncImportantData() {
+  gun.get('important').once(data => {
+    if(!data) {
+      // Not in localStorage, fetch from network
+      gun.get('important').on(data => {
+        console.log('Synced:', data);
+      });
+    }
+  });
+}
+```
+
+## Building Offline-First Apps
+
+### Example 1: Offline Todo List
+
+```javascript
+var gun = Gun();
+var todos = gun.get('todos');
+
+// Add todo (works offline)
+function addTodo(text) {
+  todos.set({
+    text: text,
+    done: false,
+    created: Date.now()
+  });
+}
+
+// Display todos (works offline)
+todos.map().on((todo, id) => {
+  renderTodo(id, todo);
+});
+
+// Toggle done (works offline)
+function toggleTodo(id) {
+  todos.get(id).get('done').once(done => {
+    todos.get(id).put({done: !done});
+  });
+}
+
+// Syncs automatically when online!
+```
+
+### Example 2: Offline Notes App
+
+```javascript
+var gun = Gun(['https://relay.example.com/gun']);
+var notes = gun.get('notes');
+
+// Create note offline
+function createNote(title, content) {
+  const id = Date.now();
+  notes.get(id).put({
+    title: title,
+    content: content,
+    modified: Date.now(),
+    synced: false // Track sync status
+  });
+  return id;
+}
+
+// Show sync status
+gun.on('hi', peer => {
+  // Connected to peer
+  updateSyncIndicator('online');
+  
+  // Mark notes as synced
+  notes.map().once((note, id) => {
+    notes.get(id).put({synced: true});
+  });
+});
+
+gun.on('bye', peer => {
+  // Disconnected
+  updateSyncIndicator('offline');
+});
+```
+
+### Example 3: Progressive Web App
+
+```javascript
+// service-worker.js
+importScripts('https://cdn.jsdelivr.net/npm/gun/gun.js');
+
+var gun = Gun();
+
+// Cache data in service worker
+self.addEventListener('fetch', event => {
+  const url = new URL(event.request.url);
+  
+  if(url.pathname.startsWith('/api/')) {
+    event.respondWith(
+      gun.get(url.pathname).once(data => {
+        return new Response(JSON.stringify(data));
+      })
+    );
+  }
+});
+
+// Works completely offline!
+```
+
+## Detecting Online/Offline
+
+```javascript
+var gun = Gun(['https://relay.example.com/gun']);
+
+// Listen for peer connections
+gun.on('hi', peer => {
+  console.log('Connected to peer:', peer.id);
+  showOnlineIndicator();
+});
+
+gun.on('bye', peer => {
+  console.log('Disconnected from peer:', peer.id);
+  showOfflineIndicator();
+});
+
+// Browser online/offline events
+window.addEventListener('online', () => {
+  console.log('Browser online');
+});
+
+window.addEventListener('offline', () => {
+  console.log('Browser offline');
+});
+```
+
+## Conflict Resolution
+
+When multiple devices make offline changes, GUN resolves conflicts automatically:
+
+```javascript
+// Phone (offline) writes
+gunPhone.get('doc').put({text: 'Phone edit', time: 1000});
+
+// Laptop (offline) writes  
+gunLaptop.get('doc').put({text: 'Laptop edit', time: 1001});
+
+// Both come online and sync
+// GUN uses state vectors (timestamps) to resolve
+// Laptop edit wins (higher timestamp)
+
+// Both devices converge to:
+// {text: 'Laptop edit', time: 1001}
+```
+
+<Info>
+  GUN's CRDT implementation ensures **eventual consistency** - all peers eventually agree on the same state.
+</Info>
+
+## Best Practices
+
+<Steps>
+  <Step title="Always assume offline">
+    Design your app to work offline-first. Network is a bonus, not a requirement.
+  </Step>
+  
+  <Step title="Show sync status">
+    Let users know when they're offline and when data has synced.
+    ```javascript
+    gun.on('hi', peer => showSyncStatus('synced'));
+    gun.on('bye', peer => showSyncStatus('offline'));
+    ```
+  </Step>
+  
+  <Step title="Handle conflicts gracefully">
+    CRDTs resolve most conflicts, but consider app-specific logic for important data.
+  </Step>
+  
+  <Step title="Test offline scenarios">
+    Use Chrome DevTools to simulate offline conditions during development.
+  </Step>
+</Steps>
+
+## Performance Tips
+
+### Lazy Loading
+
+```javascript
+// Don't load everything on startup
+gun.get('archive').once(data => {
+  // Only load if needed
+});
+
+// Instead of:
+gun.get('archive').on(data => {
+  // Always listening, even if not visible
+});
+```
+
+### Pruning Old Data
+
+```javascript
+// Clean up old localStorage data
+function pruneOldData() {
+  const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000); // 30 days
+  
+  gun.get('messages').map().once((msg, id) => {
+    if(msg.timestamp < cutoff) {
+      gun.get('messages').get(id).put(null); // Delete
+    }
+  });
+}
+```
+
+### Selective Persistence
+
+```javascript
+// Don't persist everything
+var gunMemory = Gun({localStorage: false}); // Ephemeral
+var gunPersist = Gun(); // Persisted
+
+// Temporary data
+gunMemory.get('ui-state').put({sidebar: 'open'});
+
+// Important data  
+gunPersist.get('user-profile').put({name: 'Alice'});
+```
+
+## Storage Adapters
+
+### Available Adapters
+
+<CardGroup cols={2}>
+  <Card title="localStorage" icon="box">
+    Built-in, 5MB limit, good for small apps
+  </Card>
+  
+  <Card title="IndexedDB (RAD)" icon="database">
+    50MB+, better performance, install separately
+  </Card>
+  
+  <Card title="File System (Node)" icon="file">
+    Unlimited, server-side persistence
+  </Card>
+  
+  <Card title="Amazon S3" icon="aws">
+    Cloud storage adapter for production
+  </Card>
+</CardGroup>
+
+### Custom Adapter
+
+```javascript
+// Create custom storage adapter
+Gun.on('create', function(root){
+  root.on('get', function(msg){
+    // Read from your storage
+    myStorage.get(msg.get['#']).then(data => {
+      Gun.on.get.ack(msg, data);
+    });
+  });
+  
+  root.on('put', function(msg){
+    // Write to your storage
+    myStorage.set(msg.put['#'], msg.put);
+  });
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="CRDT" icon="code-merge" href="/concepts/crdt">
+    Learn how GUN resolves conflicts
+  </Card>
+  
+  <Card title="Storage Adapters" icon="database" href="/storage/overview">
+    Explore storage options
+  </Card>
+</CardGroup>

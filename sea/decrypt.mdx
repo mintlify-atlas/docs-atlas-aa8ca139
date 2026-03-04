@@ -1,0 +1,450 @@
+---
+title: 'SEA.decrypt()'
+description: 'Decrypt AES-GCM encrypted data'
+---
+
+# SEA.decrypt()
+
+Decrypt data that was encrypted with `SEA.encrypt()`. Requires the same key that was used for encryption.
+
+## Syntax
+
+```javascript
+const decrypted = await SEA.decrypt(encrypted, key)
+SEA.decrypt(encrypted, key, callback)
+SEA.decrypt(encrypted, key, callback, options)
+```
+
+## Parameters
+
+- **encrypted** (string|object): Encrypted data from `SEA.encrypt()`
+- **key** (string|object): Decryption key or key pair with `epriv` property
+- **callback** (function, optional): Called with decrypted result
+- **options** (object, optional):
+  - `encode`: Encoding of encrypted data (default: 'base64')
+  - `name`: Decryption algorithm (default: 'AES-GCM')
+
+## Returns
+
+A Promise that resolves to the decrypted data in its original format.
+
+## Basic Usage
+
+### Decrypt with Password
+
+```javascript
+const encrypted = await SEA.encrypt('secret', 'password');
+const decrypted = await SEA.decrypt(encrypted, 'password');
+
+console.log(decrypted);  // 'secret'
+```
+
+### Decrypt with Key Pair
+
+```javascript
+const pair = await SEA.pair();
+const encrypted = await SEA.encrypt('data', pair);
+const decrypted = await SEA.decrypt(encrypted, pair);
+
+console.log(decrypted);  // 'data'
+```
+
+### With Callback
+
+```javascript
+SEA.decrypt(encrypted, 'password', (decrypted) => {
+  if (decrypted) {
+    console.log('Decrypted:', decrypted);
+  } else {
+    console.error('Decryption failed');
+  }
+});
+```
+
+## How It Works
+
+Reference: `~/workspace/source/sea/decrypt.js:8-40`
+
+1. **Parse Encrypted Data**: Extracts `ct`, `iv`, and `s` from encrypted string/object
+2. **Decode**: Converts base64 strings to binary buffers
+3. **Derive Key**: Reconstructs AES key from input key + salt
+4. **Decrypt**: Uses AES-GCM to decrypt ciphertext
+5. **Parse Result**: Converts decrypted data back to original format
+
+### Decryption Process
+
+```javascript
+// 1. Parse encrypted data
+const { ct, iv, s } = parseEncrypted(encrypted);
+
+// 2. Derive same AES key used for encryption
+const aesKey = await deriveKey(key, s);
+
+// 3. Decrypt
+const decrypted = await crypto.subtle.decrypt(
+  { 
+    name: 'AES-GCM', 
+    iv: iv,
+    tagLength: 128 
+  },
+  aesKey,
+  ct
+);
+
+// 4. Parse result (JSON if object, string otherwise)
+return parse(decrypted);
+```
+
+## Input Formats
+
+### String Format (Default)
+
+```javascript
+const encrypted = 'SEA{"ct":"...","iv":"...","s":"..."}';
+const decrypted = await SEA.decrypt(encrypted, key);
+```
+
+### Object Format
+
+```javascript
+const encrypted = {
+  ct: 'base64_ciphertext',
+  iv: 'base64_iv',
+  s: 'base64_salt'
+};
+const decrypted = await SEA.decrypt(encrypted, key);
+```
+
+## Decryption Key Types
+
+### Using a Password
+
+```javascript
+const decrypted = await SEA.decrypt(encrypted, 'same-password-used-to-encrypt');
+```
+
+### Using Key Pair
+
+```javascript
+const pair = await SEA.pair();
+// Encrypted with this pair
+const encrypted = await SEA.encrypt(data, pair);
+// Decrypt with same pair
+const decrypted = await SEA.decrypt(encrypted, pair);
+```
+
+### Using epriv Directly
+
+```javascript
+const decrypted = await SEA.decrypt(encrypted, pair.epriv);
+```
+
+### Using Shared Secret
+
+```javascript
+const alice = await SEA.pair();
+const bob = await SEA.pair();
+
+// Alice encrypts
+const secret = await SEA.secret(bob.epub, alice);
+const encrypted = await SEA.encrypt('message', secret);
+
+// Bob decrypts
+const bobSecret = await SEA.secret(alice.epub, bob);
+const decrypted = await SEA.decrypt(encrypted, bobSecret);
+console.log(decrypted);  // 'message'
+```
+
+## Data Type Preservation
+
+Decryption restores the original data type:
+
+### Strings
+
+```javascript
+const encrypted = await SEA.encrypt('Hello', key);
+const decrypted = await SEA.decrypt(encrypted, key);
+console.log(typeof decrypted);  // 'string'
+```
+
+### Objects
+
+```javascript
+const encrypted = await SEA.encrypt({ name: 'Alice' }, key);
+const decrypted = await SEA.decrypt(encrypted, key);
+console.log(decrypted.name);  // 'Alice'
+```
+
+### Arrays
+
+```javascript
+const encrypted = await SEA.encrypt([1, 2, 3], key);
+const decrypted = await SEA.decrypt(encrypted, key);
+console.log(Array.isArray(decrypted));  // true
+```
+
+### Numbers
+
+```javascript
+const encrypted = await SEA.encrypt(42, key);
+const decrypted = await SEA.decrypt(encrypted, key);
+console.log(typeof decrypted);  // 'number'
+```
+
+## Error Handling
+
+### Wrong Key
+
+```javascript
+try {
+  const decrypted = await SEA.decrypt(encrypted, 'wrong-key');
+} catch (err) {
+  console.error('Could not decrypt');  // Wrong key fails silently or throws
+}
+```
+
+### With Callbacks
+
+```javascript
+SEA.decrypt(encrypted, key, (result) => {
+  if (!result) {
+    console.error('Decryption failed - wrong key or corrupted data');
+    return;
+  }
+  console.log('Success:', result);
+});
+```
+
+### Corrupted Data
+
+```javascript
+try {
+  const decrypted = await SEA.decrypt('invalid-data', key);
+} catch (err) {
+  console.error('Malformed encrypted data');
+}
+```
+
+<Warning>
+  Decryption failures often return `undefined` rather than throwing errors. Always check the result before using it.
+</Warning>
+
+## Options
+
+### Custom Encoding
+
+If data was encrypted with custom encoding:
+
+```javascript
+const encrypted = await SEA.encrypt(data, key, null, { encode: 'hex' });
+const decrypted = await SEA.decrypt(encrypted, key, null, { encode: 'hex' });
+```
+
+### Fallback Encoding
+
+Reference: `~/workspace/source/sea/decrypt.js:24-28`
+
+SEA automatically falls back to 'utf8' encoding for legacy data:
+
+```javascript
+// Automatic fallback if base64 decryption fails
+const decrypted = await SEA.decrypt(legacyEncrypted, key);
+// Tries base64 first, then utf8
+```
+
+## Use Cases
+
+### Decrypt Private User Data
+
+```javascript
+gun.user().get('private').once(async (encrypted) => {
+  if (!encrypted) return;
+  
+  const decrypted = await SEA.decrypt(encrypted, user._.sea);
+  console.log('Private data:', decrypted);
+});
+```
+
+### End-to-End Encrypted Messaging
+
+```javascript
+// Bob receives message from Alice
+gun.get('messages').get(msgId).once(async (data) => {
+  // Derive shared secret
+  const secret = await SEA.secret(alice.epub, bob);
+  
+  // Decrypt message
+  const message = await SEA.decrypt(data.encrypted, secret);
+  console.log('Message from Alice:', message);
+});
+```
+
+### Decrypt Backup
+
+```javascript
+const backupFile = await loadFile('backup.enc');
+const password = prompt('Enter backup password:');
+
+try {
+  const data = await SEA.decrypt(backupFile, password);
+  console.log('Backup restored:', data);
+} catch (err) {
+  alert('Wrong password or corrupted backup');
+}
+```
+
+### Conditional Decryption
+
+```javascript
+gun.get('data').on(async (data) => {
+  // Check if data is encrypted (starts with "SEA")
+  if (typeof data === 'string' && data.startsWith('SEA')) {
+    data = await SEA.decrypt(data, user._.sea);
+  }
+  displayData(data);
+});
+```
+
+## Security Considerations
+
+### Authentication Tag
+
+AES-GCM includes authentication:
+
+- Verifies data integrity
+- Detects tampering
+- Decryption fails if ciphertext modified
+
+Reference: `~/workspace/source/sea/decrypt.js:22`
+
+```javascript
+{
+  name: 'AES-GCM',
+  iv: iv,
+  tagLength: 128  // 128-bit authentication tag
+}
+```
+
+### Key Security
+
+<Warning>
+  Keep decryption keys secure:
+  - Never log keys to console
+  - Don't send keys over unencrypted channels
+  - Store keys encrypted when possible
+  - Use the same key that was used for encryption
+</Warning>
+
+### Timing Attacks
+
+Web Crypto API implementations use constant-time operations to prevent timing attacks.
+
+## Performance
+
+- **Speed**: Very fast (hardware-accelerated)
+- **Async**: Always asynchronous
+- **Memory**: Efficient (streaming decryption where supported)
+
+```javascript
+const start = Date.now();
+const decrypted = await SEA.decrypt(encrypted, key);
+console.log('Decrypted in', Date.now() - start, 'ms');
+```
+
+## Common Patterns
+
+### Decrypt Helper Function
+
+```javascript
+const decryptIfNeeded = async (data, key) => {
+  if (typeof data === 'string' && data.startsWith('SEA')) {
+    return await SEA.decrypt(data, key);
+  }
+  return data;  // Not encrypted
+};
+
+const result = await decryptIfNeeded(maybeEncrypted, key);
+```
+
+### Batch Decryption
+
+```javascript
+const encryptedItems = ['SEA{...}', 'SEA{...}', 'SEA{...}'];
+const decrypted = await Promise.all(
+  encryptedItems.map(item => SEA.decrypt(item, key))
+);
+```
+
+### Safe Decryption
+
+```javascript
+const safeDecrypt = async (encrypted, key, fallback = null) => {
+  try {
+    const result = await SEA.decrypt(encrypted, key);
+    return result || fallback;
+  } catch (err) {
+    console.error('Decryption error:', err);
+    return fallback;
+  }
+};
+
+const data = await safeDecrypt(encrypted, key, { default: true });
+```
+
+## Integration with GUN
+
+### Auto-decrypt User Data
+
+```javascript
+gun.user().get('secrets').on(async (encrypted) => {
+  if (!user.is) return;  // Not authenticated
+  
+  const decrypted = await SEA.decrypt(encrypted, user._.sea);
+  updateUI(decrypted);
+});
+```
+
+### Middleware Pattern
+
+```javascript
+gun.get('private-data').on(async (data) => {
+  // Automatically decrypt all incoming data
+  if (data && typeof data === 'string' && data.startsWith('SEA')) {
+    data = await SEA.decrypt(data, user._.sea);
+  }
+  return data;
+});
+```
+
+## Troubleshooting
+
+### Decryption Returns Undefined
+
+**Causes:**
+- Wrong decryption key
+- Corrupted encrypted data
+- Data was not encrypted
+- Different encoding used
+
+**Solution:**
+```javascript
+const result = await SEA.decrypt(data, key);
+if (!result) {
+  // Try fallback or show error
+  console.error('Decryption failed');
+}
+```
+
+### "Could not decrypt" Error
+
+**Cause:** Encoding mismatch or corrupted data
+
+**Solution:**
+```javascript
+try {
+  // Try with fallback encoding
+  return await SEA.decrypt(data, key, null, { encode: 'utf8' });
+} catch (err) {
+  console.error('All decryption attempts failed');
+}
+```

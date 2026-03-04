@@ -1,0 +1,378 @@
+---
+title: Node.js Integration
+description: Set up GUN as a server-side relay peer in Node.js environments
+---
+
+# Node.js Integration
+
+GUN runs natively in Node.js and can be used as both a relay peer server and for server-side data operations.
+
+## Installation
+
+<Steps>
+  <Step title="Install GUN">
+    Install GUN via npm:
+    ```bash
+    npm install gun
+    ```
+  </Step>
+
+  <Step title="Create a basic server">
+    Set up a simple HTTP or Express server with GUN.
+  </Step>
+
+  <Step title="Configure persistence">
+    Optionally configure file-based persistence or other storage adapters.
+  </Step>
+</Steps>
+
+## Basic HTTP Server
+
+Here's a minimal GUN relay peer using Node's built-in HTTP module:
+
+```javascript
+const Gun = require('gun');
+const http = require('http');
+
+const port = process.env.PORT || 8765;
+const server = http.createServer(Gun.serve(__dirname));
+
+const gun = Gun({
+  web: server.listen(port),
+  file: 'data' // Enable file storage
+});
+
+console.log('Relay peer started on port ' + port + ' with /gun');
+
+module.exports = gun;
+```
+
+## Express Integration
+
+Integrate GUN with an Express.js application:
+
+```javascript
+const express = require('express');
+const Gun = require('gun');
+
+const port = process.env.PORT || 8765;
+const app = express();
+
+// Serve GUN's client-side code
+app.use(Gun.serve);
+
+// Serve static files from your public directory
+app.use(express.static(__dirname + '/public'));
+
+// Create HTTP server
+const server = app.listen(port);
+
+// Initialize GUN
+const gun = Gun({ 
+  file: 'data',
+  web: server 
+});
+
+// Make gun accessible for debugging (optional)
+global.Gun = Gun;
+global.gun = gun;
+
+console.log('Server started on port ' + port + ' with /gun');
+
+module.exports = gun;
+```
+
+## Production-Ready Server
+
+A more robust setup with clustering and HTTPS support:
+
+```javascript
+const cluster = require('cluster');
+const fs = require('fs');
+const Gun = require('gun');
+
+if (cluster.isMaster) {
+  return cluster.fork() && cluster.on('exit', function() { 
+    cluster.fork(); 
+  });
+}
+
+const env = process.env;
+const opt = {
+  port: env.PORT || 8765,
+  peers: env.PEERS && env.PEERS.split(',') || []
+};
+
+// Check for SSL certificates
+if (fs.existsSync((opt.home = require('os').homedir()) + '/cert.pem')) {
+  env.HTTPS_KEY = env.HTTPS_KEY || opt.home + '/key.pem';
+  env.HTTPS_CERT = env.HTTPS_CERT || opt.home + '/cert.pem';
+}
+
+if (env.HTTPS_KEY) {
+  opt.port = 443;
+  opt.key = fs.readFileSync(env.HTTPS_KEY);
+  opt.cert = fs.readFileSync(env.HTTPS_CERT);
+  opt.server = require('https').createServer(opt, Gun.serve(__dirname));
+  
+  // Redirect HTTP to HTTPS
+  require('http').createServer(function(req, res) {
+    res.writeHead(301, {"Location": "https://" + req.headers['host'] + req.url });
+    res.end();
+  }).listen(80);
+} else {
+  opt.server = require('http').createServer(Gun.serve(__dirname));
+}
+
+const gun = Gun({
+  web: opt.server.listen(opt.port), 
+  peers: opt.peers,
+  file: 'data'
+});
+
+console.log('Relay peer started on port ' + opt.port + ' with /gun');
+
+module.exports = gun;
+```
+
+## Hapi.js Integration
+
+For Hapi.js applications:
+
+```javascript
+const Hapi = require('@hapi/hapi');
+const Gun = require('gun');
+const path = require('path');
+
+const init = async () => {
+  const server = Hapi.server({
+    port: process.env.PORT || 8765,
+    host: 'localhost'
+  });
+
+  // Register inert for static file serving
+  await server.register(require('@hapi/inert'));
+
+  // Serve static files
+  server.route({
+    method: 'GET',
+    path: '/{param*}',
+    handler: {
+      directory: {
+        path: path.join(__dirname, 'public')
+      }
+    }
+  });
+
+  await server.start();
+
+  // Initialize GUN
+  const gun = Gun({
+    web: server.listener,
+    file: 'data'
+  });
+
+  console.log('Server running on %s', server.info.uri);
+
+  return { server, gun };
+};
+
+init();
+```
+
+## Server-Side Data Operations
+
+Use GUN on the server for data operations:
+
+```javascript
+const Gun = require('gun');
+const gun = Gun();
+
+// Write data
+gun.get('users').get('alice').put({
+  name: 'Alice',
+  email: 'alice@example.com',
+  joined: Gun.state()
+});
+
+// Read data
+gun.get('users').get('alice').once((data, key) => {
+  console.log('User data:', data);
+});
+
+// Subscribe to updates
+gun.get('messages').map().on((message, id) => {
+  console.log('New message:', message);
+  // Process message server-side
+});
+```
+
+## Environment Configuration
+
+Use environment variables for configuration:
+
+```bash
+# .env file
+PORT=8765
+PEERS=https://peer1.example.com/gun,https://peer2.example.com/gun
+HTTPS_KEY=/path/to/key.pem
+HTTPS_CERT=/path/to/cert.pem
+```
+
+```javascript
+require('dotenv').config();
+
+const gun = Gun({
+  web: server,
+  peers: process.env.PEERS ? process.env.PEERS.split(',') : [],
+  file: process.env.DATA_DIR || 'data'
+});
+```
+
+## Storage Adapters
+
+### File Storage (Default)
+
+```javascript
+const gun = Gun({
+  file: 'data',  // Stores data in ./data directory
+  web: server
+});
+```
+
+### Custom Storage Adapter
+
+```javascript
+Gun.on('create', function(db) {
+  this.to.next(db);
+  
+  db.on('get', function(request) {
+    // Custom read logic
+    this.to.next(request);
+  });
+  
+  db.on('put', function(request) {
+    // Custom write logic
+    this.to.next(request);
+  });
+});
+```
+
+## Connecting to Other Peers
+
+Connect your relay peer to other GUN peers:
+
+```javascript
+const gun = Gun({
+  web: server,
+  peers: [
+    'https://gun-relay-1.example.com/gun',
+    'https://gun-relay-2.example.com/gun',
+    'wss://gun-relay-3.example.com/gun'
+  ]
+});
+```
+
+## Process Management
+
+Use PM2 for production process management:
+
+```bash
+npm install -g pm2
+pm2 start server.js --name "gun-relay"
+pm2 save
+pm2 startup
+```
+
+**ecosystem.config.js**:
+
+```javascript
+module.exports = {
+  apps: [{
+    name: 'gun-relay',
+    script: './server.js',
+    instances: 'max',
+    exec_mode: 'cluster',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 8765
+    }
+  }]
+};
+```
+
+## Docker Deployment
+
+**Dockerfile**:
+
+```dockerfile
+FROM node:16-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --only=production
+
+COPY . .
+
+EXPOSE 8765
+
+CMD ["node", "server.js"]
+```
+
+**docker-compose.yml**:
+
+```yaml
+version: '3.8'
+services:
+  gun-relay:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - gun-data:/app/data
+    environment:
+      - PORT=8765
+    restart: unless-stopped
+
+volumes:
+  gun-data:
+```
+
+## Best Practices
+
+1. **Use clustering**: Implement clustering for better reliability
+2. **Enable persistence**: Use file storage or custom adapters for data persistence
+3. **Configure peers**: Connect to multiple relay peers for redundancy
+4. **Monitor resources**: Track memory and CPU usage in production
+5. **Implement logging**: Add proper logging for debugging and monitoring
+6. **Use HTTPS**: Enable SSL/TLS for production deployments
+7. **Set up backups**: Regularly backup your data directory
+
+## Monitoring & Debugging
+
+```javascript
+// Enable debugging
+Gun.log.once = (msg) => console.log(msg);
+
+// Monitor connections
+gun.on('hi', (peer) => {
+  console.log('Peer connected:', peer.id);
+});
+
+gun.on('bye', (peer) => {
+  console.log('Peer disconnected:', peer.id);
+});
+
+// Track data changes
+gun.get('stats').on((data, key) => {
+  console.log('Stats updated:', data);
+});
+```
+
+## Next Steps
+
+- Learn about [storage adapters](/storage/overview)
+- Explore [security with SEA](/sea/overview)
+- Set up [multi-peer architecture](/advanced/networking)
+- Configure [S3 storage](/storage/s3)

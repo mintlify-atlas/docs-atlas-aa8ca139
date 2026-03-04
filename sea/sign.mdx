@@ -1,0 +1,436 @@
+---
+title: 'SEA.sign()'
+description: 'Create digital signatures with ECDSA'
+---
+
+# SEA.sign()
+
+Create a digital signature for data using ECDSA (Elliptic Curve Digital Signature Algorithm). Signatures prove data authenticity and integrity.
+
+## Syntax
+
+```javascript
+const signed = await SEA.sign(data, pair)
+SEA.sign(data, pair, callback)
+SEA.sign(data, pair, callback, options)
+```
+
+## Parameters
+
+- **data** (any): Data to sign (string, object, array, number)
+- **pair** (object): Key pair with `pub` and `priv` properties
+- **callback** (function, optional): Called with signed result
+- **options** (object, optional):
+  - `encode`: Encoding for signature (default: 'base64')
+  - `raw`: Return raw object instead of SEA-prefixed string (default: false)
+  - `check`: Skip signing if already signed (internal use)
+
+## Returns
+
+A Promise that resolves to a signed message:
+
+```javascript
+"SEA{\"m\":{...data...},\"s\":\"signature_base64\"}"
+```
+
+Or if `raw: true`, returns an object:
+
+```javascript
+{
+  m: data,              // Original message
+  s: 'signature_base64'  // ECDSA signature
+}
+```
+
+## Basic Usage
+
+### Sign with Key Pair
+
+```javascript
+const pair = await SEA.pair();
+const data = { message: 'Hello World', timestamp: Date.now() };
+
+const signed = await SEA.sign(data, pair);
+console.log(signed);
+// SEA{"m":{"message":"Hello World","timestamp":1234567890},"s":"base64sig..."}
+```
+
+### Sign String Data
+
+```javascript
+const pair = await SEA.pair();
+const signed = await SEA.sign('Important message', pair);
+```
+
+### With Callback
+
+```javascript
+SEA.sign(data, pair, (signed) => {
+  console.log('Signed:', signed);
+});
+```
+
+## How It Works
+
+Reference: `~/workspace/source/sea/sign.js:9-42`
+
+1. **Parse Data**: Converts data to JSON if needed
+2. **Hash**: Computes SHA-256 hash of the data
+3. **Sign**: Uses ECDSA with P-256 curve to sign the hash
+4. **Format**: Returns message + signature in structured format
+
+### Signing Process
+
+```javascript
+// 1. Convert data to JSON
+const json = await stringify(data);
+
+// 2. Hash the data
+const hash = await SHA256(json);
+
+// 3. Create ECDSA signature
+const signature = await crypto.subtle.sign(
+  { name: 'ECDSA', hash: { name: 'SHA-256' } },
+  privateKey,
+  hash
+);
+
+// 4. Return signed message
+return {
+  m: data,                          // Original message
+  s: base64Encode(signature)        // Signature
+};
+```
+
+## Signed Message Structure
+
+### Default Format
+
+```javascript
+{
+  m: { message: 'data' },  // Message (original data)
+  s: 'r+s_signature'       // Signature (base64-encoded ECDSA signature)
+}
+```
+
+### Fields
+
+- **m**: The message/data being signed (any JSON-serializable value)
+- **s**: ECDSA signature (base64-encoded by default)
+
+## Signature Format
+
+ECDSA signatures consist of two values (r, s):
+
+- **Algorithm**: ECDSA with P-256 curve
+- **Hash**: SHA-256
+- **Encoding**: Base64 (default) or custom
+- **Size**: ~64 bytes (512 bits) for P-256
+
+## Use Cases
+
+### Sign User Data
+
+```javascript
+const user = gun.user();
+user.auth(pair, async () => {
+  const profileUpdate = {
+    name: 'Alice',
+    updated: Date.now()
+  };
+  
+  const signed = await SEA.sign(profileUpdate, user._.sea);
+  gun.user().get('profile').put(signed);
+});
+```
+
+### Prove Message Authorship
+
+```javascript
+const pair = await SEA.pair();
+
+// Alice signs a message
+const message = 'I agree to the terms';
+const signed = await SEA.sign(message, pair);
+
+// Share signed message and public key
+sharePublicly({
+  signed: signed,
+  publicKey: pair.pub
+});
+
+// Anyone can verify Alice signed it
+const verified = await SEA.verify(signed, pair.pub);
+if (verified) {
+  console.log('Alice signed:', verified);
+}
+```
+
+### Timestamped Signatures
+
+```javascript
+const createSignedTimestamp = async (data, pair) => {
+  const timestamped = {
+    data: data,
+    timestamp: Date.now(),
+    signer: pair.pub
+  };
+  return await SEA.sign(timestamped, pair);
+};
+
+const signed = await createSignedTimestamp('Action performed', pair);
+```
+
+### Sign Transactions
+
+```javascript
+const transaction = {
+  from: alice.pub,
+  to: bob.pub,
+  amount: 100,
+  nonce: Date.now()
+};
+
+const signedTx = await SEA.sign(transaction, alice);
+blockchain.submit(signedTx);
+```
+
+## Options
+
+### Raw Output
+
+Return object instead of SEA-prefixed string:
+
+```javascript
+const raw = await SEA.sign(data, pair, null, { raw: true });
+console.log(raw.m);  // Original message
+console.log(raw.s);  // Signature
+```
+
+### Custom Encoding
+
+```javascript
+const signed = await SEA.sign(data, pair, null, {
+  encode: 'hex'  // Use hex instead of base64
+});
+```
+
+### Skip Re-signing
+
+Internal optimization - if data is already signed, return it:
+
+```javascript
+const signed1 = await SEA.sign(data, pair);
+const signed2 = await SEA.sign(signed1, pair, null, { check: signed1 });
+// signed2 === signed1 (not re-signed)
+```
+
+## Security Considerations
+
+### Private Key Protection
+
+<Warning>
+  **Never share your private key!** Only use `pair.priv` for signing. Anyone with access to `priv` can create signatures as you.
+</Warning>
+
+```javascript
+// GOOD: Only share the signed message
+const signed = await SEA.sign(data, pair);
+share(signed);  // Contains pub in structure, not priv
+
+// BAD: Never do this
+share(pair);  // Exposes private key!
+```
+
+### Message Integrity
+
+Signing provides:
+
+- **Authenticity**: Proves who created the signature
+- **Integrity**: Detects any modification to the data
+- **Non-repudiation**: Signer cannot deny signing
+
+### Signature Verification
+
+Always verify signatures before trusting data:
+
+```javascript
+const signed = receivedFromNetwork();
+
+// Verify before using
+const verified = await SEA.verify(signed, expectedPublicKey);
+if (!verified) {
+  throw new Error('Invalid signature!');
+}
+
+processData(verified);
+```
+
+## ECDSA Details
+
+### Algorithm Parameters
+
+- **Curve**: P-256 (secp256r1, prime256v1)
+- **Key Size**: 256 bits
+- **Hash Function**: SHA-256
+- **Signature Size**: ~64 bytes
+- **Security Level**: 128-bit
+
+Reference: `~/workspace/source/sea/sign.js:29-30`
+
+```javascript
+const signature = await subtle.sign(
+  { name: 'ECDSA', hash: { name: 'SHA-256' } },
+  privateKey,
+  hash
+);
+```
+
+### Deterministic vs Random
+
+SEA uses the Web Crypto API's ECDSA implementation, which typically uses random nonces (RFC 6979 deterministic signatures may vary by implementation).
+
+## Error Handling
+
+### Missing Private Key
+
+```javascript
+try {
+  await SEA.sign(data, { pub: 'only_public' });
+} catch (err) {
+  console.error('No signing key.');  // Error: priv required
+}
+```
+
+### Undefined Data
+
+```javascript
+try {
+  await SEA.sign(undefined, pair);
+} catch (err) {
+  console.error('`undefined` not allowed.');
+}
+```
+
+### With Callbacks
+
+```javascript
+SEA.sign(data, pair, (result) => {
+  if (!result) {
+    console.error('Signing failed');
+    return;
+  }
+  console.log('Signed:', result);
+});
+```
+
+## Performance
+
+- **Speed**: ~1-5ms per signature (varies by device)
+- **Async**: Always asynchronous (uses Web Crypto API)
+- **Batch**: Can sign multiple messages in parallel
+
+```javascript
+const messages = ['msg1', 'msg2', 'msg3'];
+const signed = await Promise.all(
+  messages.map(msg => SEA.sign(msg, pair))
+);
+```
+
+## Common Patterns
+
+### Sign and Store
+
+```javascript
+const signAndStore = async (path, data, pair) => {
+  const signed = await SEA.sign(data, pair);
+  gun.get(path).put(signed);
+};
+
+await signAndStore('announcements', {
+  title: 'New Feature',
+  date: Date.now()
+}, adminPair);
+```
+
+### Multi-signature
+
+```javascript
+// Multiple parties sign the same data
+const data = { contract: 'terms...' };
+
+const aliceSig = await SEA.sign(data, alice);
+const bobSig = await SEA.sign(data, bob);
+
+const multiSig = {
+  data: data,
+  signatures: {
+    alice: aliceSig,
+    bob: bobSig
+  }
+};
+```
+
+### Signature Chain
+
+```javascript
+const createChain = async (data, signers) => {
+  let signed = data;
+  for (const signer of signers) {
+    signed = await SEA.sign(signed, signer);
+  }
+  return signed;
+};
+
+const chain = await createChain('data', [alice, bob, charlie]);
+```
+
+## Integration with GUN
+
+### Automatic Signing
+
+GUN automatically signs data when a user is authenticated:
+
+```javascript
+gun.user().auth(pair, () => {
+  // All data written by this user is automatically signed
+  gun.user().get('posts').set({
+    title: 'My Post',
+    content: 'Content here'
+  });
+  // GUN internally signs this data with user's keypair
+});
+```
+
+### Manual Signing for Public Data
+
+```javascript
+// Sign data before putting to public space
+const announcement = {
+  message: 'Server maintenance tonight',
+  signed_by: 'admin'
+};
+
+const signed = await SEA.sign(announcement, adminPair);
+gun.get('announcements').set(signed);
+
+// Others can verify
+gun.get('announcements').map().once(async (signed) => {
+  const verified = await SEA.verify(signed, adminPair.pub);
+  if (verified) {
+    console.log('Verified announcement:', verified);
+  }
+});
+```
+
+## Verification
+
+See [SEA.verify()](/sea/verify) for verifying signatures.
+
+```javascript
+// Sign
+const signed = await SEA.sign(data, pair);
+
+// Verify
+const verified = await SEA.verify(signed, pair.pub);
+```

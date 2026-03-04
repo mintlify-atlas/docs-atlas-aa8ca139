@@ -1,0 +1,765 @@
+---
+title: Deployment
+description: Production deployment guide for GUN relay peers including Docker, Heroku, environment configuration, and best practices
+---
+
+This guide covers deploying GUN relay peers to production environments. Relay peers help browser clients discover each other and provide persistent storage for your decentralized application.
+
+## Quick Deploy Options
+
+### Heroku
+
+One-click deploy to Heroku:
+
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/amark/gun)
+
+Source: `~/workspace/source/README.md:271`
+
+Or manually:
+
+```bash
+git clone https://github.com/amark/gun.git
+cd gun
+heroku create
+git push -f heroku HEAD:master
+```
+
+Source: `~/workspace/source/README.md:277-282`
+
+**Note**: Heroku's ephemeral filesystem deletes data every ~15 minutes. For production, add [persistent storage](#storage-configuration).
+
+Source: `~/workspace/source/README.md:273`
+
+### Docker
+
+Pull from Docker Hub:
+
+```bash
+docker run -p 8765:8765 gundb/gun
+```
+
+Source: `~/workspace/source/README.md:301`
+
+Or build locally:
+
+```bash
+git clone https://github.com/amark/gun.git
+cd gun
+docker build -t myrepo/gundb:v1 .
+docker run -p 8765:8765 myrepo/gundb:v1
+```
+
+Source: `~/workspace/source/README.md:306-311`
+
+#### Dockerfile Reference
+
+GUN's Dockerfile uses a multi-stage build:
+
+```dockerfile
+# Build stage
+FROM node:lts-alpine as builder
+RUN mkdir /work
+WORKDIR /work
+RUN apk add --no-cache alpine-sdk python3
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Runtime stage
+FROM node:lts-alpine
+WORKDIR /work
+COPY --from=builder /work/node_modules ./node_modules
+ADD . .
+EXPOSE 8080
+EXPOSE 8765
+CMD ["npm","start"]
+```
+
+Source: `~/workspace/source/Dockerfile`
+
+**Exposed Ports**:
+- `8765`: Default GUN relay port
+- `8080`: Alternative HTTP port
+
+### Linux Server
+
+Deploy on a clean Linux server:
+
+```bash
+curl -o- https://raw.githubusercontent.com/amark/gun/master/examples/install.sh | bash
+```
+
+Source: `~/workspace/source/README.md:254`
+
+**Note**: Review the install script before running. It installs Node.js, clones GUN, and starts the relay peer.
+
+Detach from the session:
+```bash
+# Press CTRL+A+D to detach
+# Stop everything: killall screen or killall node
+```
+
+Source: `~/workspace/source/README.md:260-261`
+
+## Environment Variables
+
+### Core Configuration
+
+```bash
+# Port configuration
+export PORT=8765              # HTTP/WebSocket port
+
+# HTTPS configuration
+export HTTPS_KEY=~/key.pem    # Path to SSL private key
+export HTTPS_CERT=~/cert.pem  # Path to SSL certificate
+
+# Peer configuration
+export PEERS="http://peer1.example.com/gun,http://peer2.example.com/gun"
+
+# Feature flags
+export AXE=true               # Enable AXE routing (default: true)
+export MULTICAST=false        # Disable multicast (default: auto)
+```
+
+Source: `~/workspace/source/examples/http.js:7-11`, `~/workspace/source/lib/axe.js:12`, `~/workspace/source/lib/multicast.js:7`
+
+### Build Configuration
+
+```bash
+# Prevent build warnings from failing deployment
+export CI=false
+```
+
+Source: `~/workspace/source/README.md:245`
+
+**Why needed**: When deploying web apps with GUN on cloud providers, build systems may treat GUN's warnings as errors.
+
+## HTTPS Configuration
+
+### Automatic HTTPS Detection
+
+GUN automatically enables HTTPS if certificate files exist:
+
+```javascript
+const fs = require('fs');
+const Gun = require('gun');
+
+const opt = {
+  port: process.env.PORT || 8765,
+  peers: process.env.PEERS?.split(',') || []
+};
+
+// Auto-detect certificates in home directory
+const home = require('os').homedir();
+if(fs.existsSync(home + '/cert.pem')){
+  opt.key = fs.readFileSync(home + '/key.pem');
+  opt.cert = fs.readFileSync(home + '/cert.pem');
+  opt.port = 443;
+}
+```
+
+Source: `~/workspace/source/examples/http.js:14-21`
+
+### Manual HTTPS Configuration
+
+```javascript
+const Gun = require('gun');
+const fs = require('fs');
+
+const server = require('https').createServer({
+  key: fs.readFileSync(process.env.HTTPS_KEY),
+  cert: fs.readFileSync(process.env.HTTPS_CERT)
+}, Gun.serve(__dirname));
+
+const gun = Gun({web: server.listen(443)});
+
+// Redirect HTTP to HTTPS
+require('http').createServer(function(req, res){
+  res.writeHead(301, {"Location": "https://" + req.headers['host'] + req.url});
+  res.end();
+}).listen(80);
+```
+
+Source: `~/workspace/source/examples/http.js:22-27`
+
+### Let's Encrypt
+
+Use Certbot for free SSL certificates:
+
+```bash
+# Install Certbot
+sudo apt-get update
+sudo apt-get install certbot
+
+# Obtain certificate
+sudo certbot certonly --standalone -d yourdomain.com
+
+# Set environment variables
+export HTTPS_KEY=/etc/letsencrypt/live/yourdomain.com/privkey.pem
+export HTTPS_CERT=/etc/letsencrypt/live/yourdomain.com/fullchain.pem
+export PORT=443
+
+# Start GUN
+node server.js
+```
+
+### Nginx Reverse Proxy
+
+For complex setups, use Nginx:
+
+```nginx
+server {
+  listen 80;
+  server_name yourdomain.com;
+  return 301 https://$server_name$request_uri;
+}
+
+server {
+  listen 443 ssl http2;
+  server_name yourdomain.com;
+
+  ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+
+  location /gun {
+    proxy_pass http://localhost:8765;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_cache_bypass $http_upgrade;
+  }
+}
+```
+
+Source: Referenced in `~/workspace/source/README.md:262`
+
+## Storage Configuration
+
+### File System Storage (Default)
+
+```javascript
+const Gun = require('gun');
+require('gun/lib/server'); // Includes file storage
+
+const gun = Gun({
+  file: 'data.json' // Relative to server root
+});
+```
+
+Source: File storage is included in `~/workspace/source/lib/server.js:15`
+
+### RAD Storage (Optimized)
+
+Radix storage for better performance:
+
+```javascript
+const gun = Gun({
+  rad: true // Enables radix storage
+});
+```
+
+### Amazon S3 Storage
+
+For Heroku and other ephemeral filesystems:
+
+```bash
+# Set environment variables
+export AWS_ACCESS_KEY_ID=your_access_key
+export AWS_SECRET_ACCESS_KEY=your_secret_key
+export AWS_S3_BUCKET=your-bucket-name
+```
+
+```javascript
+const Gun = require('gun');
+require('gun/lib/rs3'); // S3 adapter
+
+const gun = Gun({
+  s3: {
+    key: process.env.AWS_ACCESS_KEY_ID,
+    secret: process.env.AWS_SECRET_ACCESS_KEY,
+    bucket: process.env.AWS_S3_BUCKET
+  }
+});
+```
+
+Source: S3 adapter at `~/workspace/source/lib/rs3.js`, mentioned in `~/workspace/source/README.md:273`
+
+### Custom Storage Adapter
+
+Implement your own storage:
+
+```javascript
+Gun.on('create', function(root){
+  this.to.next(root);
+  
+  root.on('put', function(msg){
+    this.to.next(msg);
+    // Save msg.put to your storage
+    saveToDatabase(msg.put);
+  });
+  
+  root.on('get', function(msg){
+    this.to.next(msg);
+    // Load from your storage
+    loadFromDatabase(msg.get, function(data){
+      root.on('in', {'@': msg['#'], put: data});
+    });
+  });
+});
+```
+
+## Process Management
+
+### PM2 (Recommended)
+
+```bash
+# Install PM2
+npm install -g pm2
+
+# Start GUN
+pm2 start examples/http.js --name gun-relay
+
+# Auto-restart on reboot
+pm2 startup
+pm2 save
+
+# Monitor
+pm2 monit
+
+# View logs
+pm2 logs gun-relay
+```
+
+### Systemd Service
+
+Create `/etc/systemd/system/gun.service`:
+
+```ini
+[Unit]
+Description=GUN Relay Peer
+After=network.target
+
+[Service]
+Type=simple
+User=gunuser
+WorkingDirectory=/home/gunuser/gun
+Environment=PORT=8765
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node examples/http.js
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# Enable and start
+sudo systemctl enable gun
+sudo systemctl start gun
+
+# Check status
+sudo systemctl status gun
+
+# View logs
+sudo journalctl -u gun -f
+```
+
+### Clustering
+
+GUN includes automatic clustering:
+
+```javascript
+const cluster = require('cluster');
+
+if(cluster.isMaster){
+  // Fork workers for each CPU
+  require('os').cpus().forEach(() => cluster.fork());
+  
+  // Restart on crash
+  cluster.on('exit', () => {
+    cluster.fork();
+  });
+} else {
+  // Worker process
+  const Gun = require('gun');
+  Gun({web: require('http').createServer().listen(8765)});
+}
+```
+
+Source: `~/workspace/source/examples/http.js:2-5`
+
+## Network Topology
+
+### Single Relay Peer
+
+Simplest setup for small applications:
+
+```
+Browser ←→ Relay Peer ←→ Browser
+```
+
+```javascript
+// Client
+const gun = Gun({
+  peers: ['https://relay.example.com/gun']
+});
+```
+
+### Multiple Relay Peers
+
+Redundancy and load balancing:
+
+```
+         Relay 1
+        /       \
+  Browser      Relay 2 ←→ Browser
+        \       /
+         Relay 3
+```
+
+```javascript
+// Client
+const gun = Gun({
+  peers: [
+    'https://relay1.example.com/gun',
+    'https://relay2.example.com/gun',
+    'https://relay3.example.com/gun'
+  ]
+});
+
+// Relay peer configuration
+const gun = Gun({
+  web: server.listen(8765),
+  peers: [
+    'https://relay2.example.com/gun',
+    'https://relay3.example.com/gun'
+  ]
+});
+```
+
+### Geographic Distribution
+
+Distribute relays globally for lower latency:
+
+```
+US-West Relay ←→ US-East Relay ←→ EU Relay ←→ Asia Relay
+```
+
+Clients connect to nearest relay.
+
+### Hybrid Architecture
+
+```
+       Public Relay Peers
+              ↕
+       Private Relay Peers
+              ↕
+       Internal Network
+```
+
+Public relays for browser clients, private relays for backend services.
+
+## Monitoring and Logging
+
+### Enable Statistics
+
+```javascript
+console.STAT = {};
+
+setInterval(() => {
+  console.log('Gun Stats:', {
+    peers: console.STAT.peers,
+    memory: console.STAT.memused,
+    timestamp: new Date().toISOString()
+  });
+}, 60000);
+```
+
+Source: Referenced in `~/workspace/source/src/mesh.js:328`
+
+### Structured Logging
+
+```javascript
+const Gun = require('gun');
+
+const gun = Gun({
+  log: function(...args){
+    console.log(JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'info',
+      message: args.join(' ')
+    }));
+  }
+});
+```
+
+### Health Check Endpoint
+
+```javascript
+const Gun = require('gun');
+const express = require('express');
+
+const app = express();
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    peers: gun._.opt.peers ? Object.keys(gun._.opt.peers).length : 0
+  });
+});
+
+app.use(Gun.serve);
+const server = app.listen(8765);
+
+const gun = Gun({web: server});
+```
+
+### Error Tracking
+
+```javascript
+const Gun = require('gun');
+
+Gun.on('create', function(root){
+  this.to.next(root);
+  
+  root.on('in', function(msg){
+    try {
+      this.to.next(msg);
+    } catch(err) {
+      console.error('Error processing message:', err);
+      // Send to error tracking service
+    }
+  });
+});
+```
+
+## Security Best Practices
+
+### 1. Use HTTPS/WSS
+
+Always use encrypted connections in production:
+
+```javascript
+// Force HTTPS
+if(req.headers['x-forwarded-proto'] !== 'https'){
+  res.redirect('https://' + req.headers.host + req.url);
+}
+```
+
+### 2. Rate Limiting
+
+```javascript
+const rateLimit = require('express-rate-limit');
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000 // Limit each IP to 1000 requests per windowMs
+});
+
+app.use('/gun', limiter);
+```
+
+### 3. Message Size Limits
+
+```javascript
+const gun = Gun({
+  max: 10000000 // 10MB max message size
+});
+```
+
+Source: `~/workspace/source/src/mesh.js:15`
+
+### 4. Authentication
+
+Use GUN's SEA for user authentication:
+
+```javascript
+const Gun = require('gun');
+require('gun/sea');
+
+const gun = Gun();
+
+// Server-side validation
+gun.on('in', function(msg){
+  if(msg.put){
+    // Verify signature
+    Gun.SEA.verify(msg.put, msg.put.auth).then(verified => {
+      if(!verified){
+        console.log('Invalid signature');
+        return; // Reject message
+      }
+      this.to.next(msg);
+    });
+  } else {
+    this.to.next(msg);
+  }
+});
+```
+
+### 5. CORS Configuration
+
+```javascript
+const cors = require('cors');
+
+app.use(cors({
+  origin: ['https://yourapp.com'],
+  credentials: true
+}));
+```
+
+## Performance Tuning
+
+### Optimize for Relay Role
+
+```javascript
+const gun = Gun({
+  super: true,  // Optimize for relay
+  faith: true,  // Skip some validations
+  axe: true     // Enable smart routing
+});
+```
+
+Source: `~/workspace/source/lib/server.js:8-9`
+
+### Connection Limits
+
+```javascript
+const gun = Gun({
+  rtc: {
+    max: 55 // Limit WebRTC connections
+  }
+});
+```
+
+### Memory Management
+
+```javascript
+const gun = Gun({
+  memory: 1000000000 // 1GB memory limit
+});
+```
+
+## Backup and Recovery
+
+### Automated Backups
+
+```bash
+#!/bin/bash
+# backup.sh
+
+BACKUP_DIR=/var/backups/gun
+DATE=$(date +%Y%m%d_%H%M%S)
+
+# Create backup
+tar -czf $BACKUP_DIR/gun-data-$DATE.tar.gz /path/to/gun/radata/
+
+# Keep only last 7 days
+find $BACKUP_DIR -name "gun-data-*.tar.gz" -mtime +7 -delete
+```
+
+```cron
+# Run daily at 2 AM
+0 2 * * * /path/to/backup.sh
+```
+
+### Data Export
+
+```javascript
+const Gun = require('gun');
+const fs = require('fs');
+
+const gun = Gun();
+const output = fs.createWriteStream('export.json');
+
+gun.get('data').once(data => {
+  output.write(JSON.stringify(data, null, 2));
+  output.end();
+});
+```
+
+### Data Import
+
+```javascript
+const Gun = require('gun');
+const fs = require('fs');
+
+const gun = Gun();
+const data = JSON.parse(fs.readFileSync('export.json'));
+
+gun.get('data').put(data);
+```
+
+## Troubleshooting
+
+### Connection Issues
+
+```javascript
+// Test peer connectivity
+gun.on('hi', peer => {
+  console.log('Connected to peer:', peer.id);
+});
+
+gun.on('bye', peer => {
+  console.log('Disconnected from peer:', peer.id);
+});
+```
+
+### Memory Leaks
+
+```bash
+# Monitor memory usage
+node --expose-gc --max-old-space-size=4096 server.js
+```
+
+```javascript
+// Force garbage collection periodically
+setInterval(() => {
+  if(global.gc){
+    global.gc();
+    console.log('Memory:', process.memoryUsage());
+  }
+}, 60000);
+```
+
+### Storage Issues
+
+```javascript
+// Check file permissions
+const fs = require('fs');
+
+try {
+  fs.accessSync('./radata', fs.constants.W_OK);
+  console.log('Storage directory is writable');
+} catch(err) {
+  console.error('Storage directory is not writable:', err);
+}
+```
+
+## Deployment Checklist
+
+- [ ] HTTPS/WSS enabled
+- [ ] Environment variables configured
+- [ ] Storage backend configured
+- [ ] Process manager (PM2/systemd) configured
+- [ ] Monitoring and logging enabled
+- [ ] Health checks implemented
+- [ ] Rate limiting enabled
+- [ ] CORS configured
+- [ ] Backup strategy implemented
+- [ ] Multiple relay peers deployed
+- [ ] Geographic distribution (if needed)
+- [ ] Auto-restart on crash configured
+- [ ] Memory limits set
+- [ ] Error tracking enabled
+- [ ] Load testing completed
+
+## Next Steps
+
+- Optimize [Performance](/advanced/performance) for production
+- Understand [CAP Theorem](/advanced/cap-theorem) implications
+- Configure [Networking](/advanced/networking) topology
+- Implement [Conflict Resolution](/advanced/conflict-resolution) strategies

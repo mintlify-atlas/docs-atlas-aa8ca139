@@ -1,0 +1,630 @@
+---
+title: "S3 Storage Adapter"
+description: "Amazon S3 and S3-compatible cloud storage adapter for distributed GUN applications"
+---
+
+# S3 Storage Adapter
+
+The S3 storage adapter enables GUN to store data in Amazon S3 or any S3-compatible storage service (DigitalOcean Spaces, MinIO, Wasabi, etc.). This provides durable, scalable cloud storage for distributed applications.
+
+## Installation
+
+First, install the AWS SDK:
+
+```bash
+npm install aws-sdk
+```
+
+Then require the S3 adapter:
+
+```javascript
+const Gun = require('gun');
+require('gun/lib/rs3');
+
+const gun = Gun({
+  s3: {
+    bucket: 'my-gun-data',
+    region: 'us-east-1',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  }
+});
+```
+
+## Configuration Options
+
+The S3 adapter accepts the following configuration options:
+
+```javascript
+const gun = Gun({
+  s3: {
+    // Required
+    bucket: 'my-bucket',                    // S3 bucket name
+    
+    // AWS Credentials (required unless using IAM roles)
+    accessKeyId: 'AKIAIOSFODNN7EXAMPLE',     // AWS access key
+    secretAccessKey: 'wJalrXUtnFEMI/...',    // AWS secret key
+    key: 'AKIAIOSFODNN7EXAMPLE',             // Alias for accessKeyId
+    secret: 'wJalrXUtnFEMI/...',             // Alias for secretAccessKey
+    
+    // Optional
+    region: 'us-east-1',                     // AWS region
+    
+    // S3-compatible services (MinIO, DigitalOcean Spaces, etc.)
+    fakes3: 'https://s3.example.com',        // Custom S3 endpoint
+    endpoint: 'https://s3.example.com',      // Alternative to fakes3
+    sslEnabled: false                        // For local/development S3
+  }
+});
+```
+
+### Using Environment Variables
+
+The adapter automatically reads from environment variables:
+
+```bash
+# .env file
+AWS_S3_BUCKET=my-gun-data
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+# For S3-compatible services
+fakes3=https://nyc3.digitaloceanspaces.com
+```
+
+```javascript
+const gun = Gun({
+  s3: {}  // Reads from environment variables
+});
+```
+
+### Key Options
+
+#### `bucket` (string, required)
+Name of the S3 bucket where data will be stored.
+
+```javascript
+s3: {
+  bucket: 'my-app-gun-data'
+}
+```
+
+#### `region` (string)
+AWS region for your bucket.
+
+**Default:** `'us-east-1'`
+
+```javascript
+s3: {
+  bucket: 'my-bucket',
+  region: 'eu-west-1'
+}
+```
+
+#### `accessKeyId` / `key` (string)
+AWS access key ID for authentication.
+
+```javascript
+s3: {
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID
+}
+```
+
+#### `secretAccessKey` / `secret` (string)
+AWS secret access key for authentication.
+
+```javascript
+s3: {
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+}
+```
+
+#### `fakes3` / `endpoint` (string)
+Custom endpoint for S3-compatible services.
+
+```javascript
+// DigitalOcean Spaces
+s3: {
+  bucket: 'my-space',
+  region: 'nyc3',
+  endpoint: 'https://nyc3.digitaloceanspaces.com',
+  accessKeyId: 'DO_SPACES_KEY',
+  secretAccessKey: 'DO_SPACES_SECRET'
+}
+
+// MinIO (local)
+s3: {
+  bucket: 'gun-data',
+  endpoint: 'http://localhost:9000',
+  accessKeyId: 'minioadmin',
+  secretAccessKey: 'minioadmin',
+  sslEnabled: false
+}
+```
+
+## AWS Setup
+
+### Creating an S3 Bucket
+
+1. Go to [AWS S3 Console](https://console.aws.amazon.com/s3/)
+2. Click "Create bucket"
+3. Enter bucket name (e.g., "my-gun-data")
+4. Select a region
+5. Configure options:
+   - Block all public access: **Enabled** (recommended)
+   - Versioning: Optional
+   - Encryption: Optional
+6. Click "Create bucket"
+
+### Creating IAM Credentials
+
+1. Go to [AWS IAM Console](https://console.aws.amazon.com/iam/)
+2. Navigate to "Users" > "Add users"
+3. Enter username (e.g., "gun-app")
+4. Select "Programmatic access"
+5. Attach policy:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Action": [
+           "s3:GetObject",
+           "s3:PutObject",
+           "s3:ListBucket"
+         ],
+         "Resource": [
+           "arn:aws:s3:::my-gun-data",
+           "arn:aws:s3:::my-gun-data/*"
+         ]
+       }
+     ]
+   }
+   ```
+6. Save the Access Key ID and Secret Access Key
+
+### Using IAM Roles (EC2, Lambda, ECS)
+
+For applications running on AWS infrastructure, use IAM roles instead of credentials:
+
+```javascript
+// No credentials needed - uses attached IAM role
+const gun = Gun({
+  s3: {
+    bucket: 'my-gun-data',
+    region: 'us-east-1'
+  }
+});
+```
+
+Attach this policy to your EC2 instance role, Lambda function role, or ECS task role.
+
+## How S3 Storage Works
+
+### Storage Structure
+
+Data is stored as individual objects in S3:
+
+```
+my-gun-data/
+├── user%1Balice%1Bname         # Object for user/alice/name
+├── user%1Balice%1Bage          # Object for user/alice/age
+├── user%1Bbob%1Bname           # Object for user/bob/name
+└── ...                         # More objects
+```
+
+Each object contains JSON-encoded data:
+
+```json
+{":":"Alice",">":1234567890}
+```
+
+### Caching Layer
+
+The S3 adapter includes a built-in caching layer to minimize API calls:
+
+```javascript
+// From rs3.js
+var c = {p: {}, g: {}, l: {}};
+
+// c.p - pending puts
+// c.g - pending gets (batches requests)
+// c.l - list cache
+```
+
+**Benefits:**
+- Reduces S3 API calls (and costs)
+- Improves read/write performance
+- Batches multiple requests
+
+### Write Operations
+
+```javascript
+// Multiple writes to the same key are coalesced
+gun.get('user/alice').put({ name: 'Alice' });
+gun.get('user/alice').put({ name: 'Alice Smith' });
+
+// Only the final value is written to S3
+```
+
+### Read Operations
+
+```javascript
+// Reads are cached during pending operations
+gun.get('user/alice').on(function(data) {
+  // If data was just written, returns from cache
+  // Otherwise, fetches from S3
+});
+```
+
+## S3-Compatible Services
+
+### DigitalOcean Spaces
+
+[DigitalOcean Spaces](https://www.digitalocean.com/products/spaces) is an S3-compatible object storage service:
+
+```javascript
+const gun = Gun({
+  s3: {
+    bucket: 'my-space',
+    region: 'nyc3',
+    endpoint: 'https://nyc3.digitaloceanspaces.com',
+    accessKeyId: process.env.DO_SPACES_KEY,
+    secretAccessKey: process.env.DO_SPACES_SECRET
+  }
+});
+```
+
+**Available regions:**
+- `nyc3` - New York 3
+- `ams3` - Amsterdam 3
+- `sgp1` - Singapore 1
+- `sfo3` - San Francisco 3
+- `fra1` - Frankfurt 1
+
+### MinIO (Self-Hosted)
+
+[MinIO](https://min.io/) is a self-hosted S3-compatible storage server:
+
+```bash
+# Start MinIO server
+docker run -p 9000:9000 -p 9001:9001 \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadmin" \
+  minio/minio server /data --console-address ":9001"
+```
+
+```javascript
+const gun = Gun({
+  s3: {
+    bucket: 'gun-data',
+    endpoint: 'http://localhost:9000',
+    accessKeyId: 'minioadmin',
+    secretAccessKey: 'minioadmin',
+    sslEnabled: false,
+    s3ForcePathStyle: true  // Required for MinIO
+  }
+});
+```
+
+### Wasabi
+
+[Wasabi](https://wasabi.com/) is a low-cost S3-compatible storage:
+
+```javascript
+const gun = Gun({
+  s3: {
+    bucket: 'my-bucket',
+    endpoint: 'https://s3.us-east-1.wasabisys.com',
+    region: 'us-east-1',
+    accessKeyId: process.env.WASABI_ACCESS_KEY,
+    secretAccessKey: process.env.WASABI_SECRET_KEY
+  }
+});
+```
+
+### Backblaze B2
+
+[Backblaze B2](https://www.backblaze.com/b2/cloud-storage.html) offers S3-compatible API:
+
+```javascript
+const gun = Gun({
+  s3: {
+    bucket: 'my-bucket',
+    endpoint: 'https://s3.us-west-001.backblazeb2.com',
+    region: 'us-west-001',
+    accessKeyId: process.env.B2_KEY_ID,
+    secretAccessKey: process.env.B2_APPLICATION_KEY
+  }
+});
+```
+
+## Mixed Storage (S3 + Local)
+
+Combine S3 with local storage for better performance:
+
+```javascript
+const Gun = require('gun');
+require('gun/lib/rs3');    // S3 for cloud backup
+require('gun/lib/radisk'); // Local file system for speed
+
+const gun = Gun({
+  file: 'radata',  // Local storage
+  s3: {            // Cloud backup
+    bucket: 'my-gun-data',
+    region: 'us-east-1'
+  }
+});
+
+// Writes go to both local and S3
+// Reads prefer local, fall back to S3
+```
+
+## Cost Optimization
+
+### Minimizing S3 Requests
+
+S3 charges per request. Optimize by:
+
+1. **Using the cache**: The adapter already caches, but batch your writes:
+   ```javascript
+   // Bad: Many separate writes
+   gun.get('user/alice').put({ name: 'Alice' });
+   gun.get('user/alice').put({ age: 30 });
+   
+   // Better: Single write
+   gun.get('user/alice').put({ name: 'Alice', age: 30 });
+   ```
+
+2. **Configuring lifecycle rules**: Archive old data to S3 Glacier:
+   - In S3 Console, go to Management > Lifecycle rules
+   - Transition objects to Glacier after 30+ days
+
+3. **Using Intelligent-Tiering**: Automatically moves data between access tiers
+
+### Estimated Costs (AWS S3)
+
+For a typical GUN application:
+
+```
+Assumptions:
+- 1 million objects (keys)
+- 100 MB total storage
+- 1 million reads/month
+- 100k writes/month
+
+Costs (us-east-1):
+- Storage: $0.023/GB × 0.1 GB = $0.00
+- PUT requests: $0.005/1,000 × 100 = $0.50
+- GET requests: $0.0004/1,000 × 1,000 = $0.40
+
+Total: ~$0.90/month
+```
+
+## Performance Tuning
+
+### Parallel Operations
+
+The S3 adapter batches requests automatically:
+
+```javascript
+// These reads are batched together
+gun.get('user/alice').once(log);
+gun.get('user/bob').once(log);
+gun.get('user/carol').once(log);
+
+// Results in optimized S3 requests
+```
+
+### Prefetching Data
+
+For known access patterns, prefetch data:
+
+```javascript
+// Prefetch user list
+gun.get('users').once(function(users) {
+  Object.keys(users).forEach(function(id) {
+    gun.get('user/' + id).once(function() {
+      // Data now cached
+    });
+  });
+});
+```
+
+### Transfer Acceleration
+
+Enable S3 Transfer Acceleration for faster uploads:
+
+```javascript
+const AWS = require('aws-sdk');
+
+const gun = Gun({
+  s3: {
+    bucket: 'my-gun-data',
+    region: 'us-east-1',
+    useAccelerateEndpoint: true
+  }
+});
+```
+
+## Security Best Practices
+
+### Bucket Permissions
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": "arn:aws:s3:::my-gun-data/*",
+      "Condition": {
+        "Bool": {
+          "aws:SecureTransport": "false"
+        }
+      }
+    }
+  ]
+}
+```
+
+### Encryption at Rest
+
+Enable default encryption for your bucket:
+
+1. Go to S3 Console
+2. Select your bucket
+3. Properties > Default encryption
+4. Choose AES-256 (SSE-S3) or AWS KMS
+
+### Encryption in Transit
+
+Always use SSL:
+
+```javascript
+const gun = Gun({
+  s3: {
+    bucket: 'my-gun-data',
+    sslEnabled: true  // Default for AWS S3
+  }
+});
+```
+
+### Credential Rotation
+
+Rotate AWS credentials regularly:
+
+```bash
+# Create new credentials
+aws iam create-access-key --user-name gun-app
+
+# Update your application
+export AWS_ACCESS_KEY_ID=new_key
+export AWS_SECRET_ACCESS_KEY=new_secret
+
+# Delete old credentials
+aws iam delete-access-key --user-name gun-app --access-key-id old_key
+```
+
+## Monitoring and Debugging
+
+### Enable S3 Request Logging
+
+Log all S3 requests for debugging:
+
+```javascript
+const AWS = require('aws-sdk');
+
+AWS.config.logger = console;
+
+const gun = Gun({
+  s3: {
+    bucket: 'my-gun-data'
+  }
+});
+```
+
+### CloudWatch Metrics
+
+Monitor S3 metrics in AWS CloudWatch:
+- Request count
+- Error rate
+- Latency
+- Bucket size
+
+### Error Handling
+
+```javascript
+gun.on('error', function(err) {
+  if (err.code === 'NoSuchKey') {
+    console.log('Key not found in S3');
+  } else if (err.code === 'AccessDenied') {
+    console.error('S3 permission denied:', err);
+  } else {
+    console.error('S3 error:', err);
+  }
+});
+```
+
+## Troubleshooting
+
+### "Please `npm install aws-sdk`"
+
+Install the AWS SDK:
+
+```bash
+npm install aws-sdk
+```
+
+### "AccessDenied" Errors
+
+Check your IAM policy includes:
+- `s3:GetObject`
+- `s3:PutObject`
+- `s3:ListBucket`
+
+### "NoSuchBucket" Errors
+
+Ensure the bucket exists and region is correct:
+
+```javascript
+const gun = Gun({
+  s3: {
+    bucket: 'my-gun-data',
+    region: 'us-east-1'  // Must match bucket region
+  }
+});
+```
+
+### Connection Timeouts
+
+Increase timeout for slow connections:
+
+```javascript
+const AWS = require('aws-sdk');
+
+const gun = Gun({
+  s3: {
+    bucket: 'my-gun-data',
+    httpOptions: {
+      timeout: 120000  // 2 minutes
+    }
+  }
+});
+```
+
+## Best Practices
+
+1. **Use environment variables** for credentials
+2. **Enable versioning** for production buckets
+3. **Set up lifecycle rules** to manage costs
+4. **Monitor usage** with CloudWatch
+5. **Encrypt at rest** and in transit
+6. **Use IAM roles** when possible
+7. **Enable Transfer Acceleration** for global apps
+8. **Combine with local storage** for performance
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="RADisk Adapter" icon="hard-drive" href="/storage/radisk">
+    Local file system storage
+  </Card>
+  
+  <Card title="Custom Adapters" icon="code" href="/storage/custom-adapters">
+    Build your own storage adapter
+  </Card>
+  
+  <Card title="Distributed Systems" icon="network-wired" href="/concepts/decentralization">
+    Build distributed GUN applications
+  </Card>
+  
+  <Card title="Security" icon="shield" href="/sea/overview">
+    Secure your GUN application
+  </Card>
+</CardGroup>

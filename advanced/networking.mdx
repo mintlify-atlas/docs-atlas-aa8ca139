@@ -1,0 +1,308 @@
+---
+title: Networking
+description: Learn about GUN's networking protocols including WebSocket, WebRTC, and multicast for peer-to-peer connectivity
+---
+
+GUN provides multiple networking transports to enable peer-to-peer connectivity across different environments. The mesh networking layer automatically handles peer discovery, message routing, and failover.
+
+## Transport Protocols
+
+### WebSocket
+
+WebSocket is the default transport for GUN relay peers. It provides bidirectional, real-time communication between peers.
+
+```javascript
+const gun = Gun({
+  peers: ['http://localhost:8765/gun']
+});
+```
+
+The relay peer automatically upgrades HTTP connections to WebSocket when available.
+
+#### Server Configuration
+
+```javascript
+const Gun = require('gun');
+const server = require('http').createServer();
+
+const gun = Gun({
+  web: server.listen(8765),
+  peers: [] // Connect to other peers
+});
+
+console.log('Relay peer started on port 8765');
+```
+
+Source: `~/workspace/source/examples/http.js:28-32`
+
+### WebRTC
+
+WebRTC enables direct peer-to-peer connections between browsers without requiring a relay server. GUN includes built-in WebRTC support through the `gun/lib/webrtc.js` module.
+
+```javascript
+const gun = Gun({
+  rtc: {
+    iceServers: [
+      {urls: 'stun:stun.l.google.com:19302'},
+      {urls: 'stun:stun.cloudflare.com:3478'}
+    ],
+    dataChannel: {
+      ordered: false,
+      maxRetransmits: 2
+    },
+    max: 55, // Maximum number of WebRTC connections
+    room: 'my-app-room' // Room for peer discovery
+  }
+});
+```
+
+Source: `~/workspace/source/lib/webrtc.js:22-36`
+
+#### How WebRTC Works in GUN
+
+1. **Peer Discovery**: Peers announce themselves to a room using GUN's graph sync
+2. **Offer/Answer Exchange**: SDP offers and answers are exchanged via GUN messages
+3. **ICE Candidates**: Connection candidates are shared for NAT traversal
+4. **Data Channel**: Once connected, messages flow through the WebRTC data channel
+
+```javascript
+// Disable WebRTC if needed
+const gun = Gun({
+  RTCPeerConnection: false
+});
+```
+
+Source: `~/workspace/source/lib/webrtc.js:8`
+
+#### Media Streams
+
+GUN's WebRTC implementation supports media streams for video/audio:
+
+```javascript
+navigator.mediaDevices.getUserMedia({video: true, audio: true})
+  .then(stream => {
+    gun.opt().mesh.wire(stream);
+  });
+```
+
+Source: `~/workspace/source/lib/webrtc.js:52-62`
+
+### Multicast
+
+Multicast enables UDP-based local network discovery in Node.js environments. This is perfect for IoT devices or local-first applications.
+
+```javascript
+const gun = Gun({
+  multicast: {
+    address: '233.255.255.255',
+    port: 8765,
+    pack: 50000 // Max UDP packet size (65KB limit)
+  }
+});
+```
+
+Source: `~/workspace/source/lib/multicast.js:10-13`
+
+#### Disabling Multicast
+
+```bash
+# Environment variable
+export MULTICAST=false
+
+# Or in code
+const gun = Gun({ multicast: false });
+```
+
+Source: `~/workspace/source/lib/multicast.js:7`
+
+## Peer Discovery
+
+### Static Peers
+
+Manually specify peer URLs:
+
+```javascript
+const gun = Gun({
+  peers: [
+    'http://peer1.example.com/gun',
+    'http://peer2.example.com/gun',
+    'http://peer3.example.com/gun'
+  ]
+});
+```
+
+### Dynamic Peer Discovery
+
+GUN automatically discovers peers through:
+
+1. **WebRTC Room Announcements**: Peers join rooms and discover each other
+2. **Multicast Broadcasting**: Local network peers announce themselves via UDP
+3. **Peer Gossip**: Connected peers share information about other peers
+
+### AXE Relay Protocol
+
+AXE (Advanced eXchange Engine) is GUN's intelligent routing protocol that optimizes message delivery across the mesh network.
+
+```bash
+# Enable AXE (enabled by default)
+export AXE=true
+
+# Disable AXE
+export AXE=false
+```
+
+Source: `~/workspace/source/lib/axe.js:12`
+
+AXE features:
+- **Smart routing**: Messages are routed to subscribed peers only
+- **Subscription tracking**: Peers track which data other peers are interested in
+- **Load balancing**: GET requests are distributed across multiple peers
+- **Deduplication**: Prevents duplicate messages using hash checking
+
+## Mesh Architecture
+
+GUN's mesh networking layer (`src/mesh.js`) handles all peer communication:
+
+### Message Flow
+
+1. **hear()**: Receive messages from peers
+2. **say()**: Send messages to peers
+3. **Batching**: Messages are batched for efficient network utilization
+4. **Deduplication**: Duplicate messages are filtered using message IDs
+
+Source: `~/workspace/source/src/mesh.js:24-194`
+
+### Peer States
+
+```javascript
+gun.on('hi', peer => {
+  console.log('Peer connected:', peer.id);
+});
+
+gun.on('bye', peer => {
+  console.log('Peer disconnected:', peer.id);
+});
+```
+
+Source: `~/workspace/source/src/mesh.js:266-294`
+
+### Message Limits
+
+```javascript
+const gun = Gun({
+  gap: 0,        // Delay between batched messages (ms)
+  max: 300000000 * 0.3, // Max message size (~90MB)
+  pack: 3000,    // Batch packet size
+  puff: 9        // Messages processed per tick
+});
+```
+
+Source: `~/workspace/source/src/mesh.js:14-17`
+
+## Network Optimization
+
+### Connection Pooling
+
+GUN maintains a pool of peer connections and automatically reconnects on failure.
+
+### Backpressure Handling
+
+Messages are queued when peers are temporarily unavailable:
+
+```javascript
+// Queued messages are sent when peer reconnects
+peer.queue = peer.queue || [];
+peer.queue.push(message);
+```
+
+Source: `~/workspace/source/src/mesh.js:262`
+
+### Message Batching
+
+Messages are automatically batched into JSON arrays to reduce network overhead:
+
+```javascript
+// Multiple messages sent as: [{msg1}, {msg2}, {msg3}]
+```
+
+Source: `~/workspace/source/src/mesh.js:178-192`
+
+## Security Considerations
+
+### HTTPS/WSS
+
+For production deployments, always use encrypted connections:
+
+```javascript
+const fs = require('fs');
+const Gun = require('gun');
+
+const server = require('https').createServer({
+  key: fs.readFileSync('key.pem'),
+  cert: fs.readFileSync('cert.pem')
+}, Gun.serve(__dirname));
+
+const gun = Gun({web: server.listen(443)});
+```
+
+Source: `~/workspace/source/examples/http.js:18-22`
+
+### Peer Authentication
+
+Use GUN's SEA (Security, Encryption, Authorization) for peer authentication:
+
+```javascript
+const Gun = require('gun');
+require('gun/sea');
+
+const gun = Gun();
+const user = gun.user();
+
+user.create('alice', 'password', ack => {
+  user.auth('alice', 'password');
+});
+```
+
+## Debugging Network Issues
+
+### Enable Statistics
+
+```javascript
+console.STAT = {};
+
+// Access stats
+setInterval(() => {
+  console.log('Connected peers:', console.STAT.peers);
+}, 1000);
+```
+
+Source: `~/workspace/source/src/mesh.js:328`
+
+### Message Tracking
+
+Enable debug logging to track message flow:
+
+```javascript
+Gun.log = console.log;
+
+const gun = Gun({
+  log: console.log
+});
+```
+
+## Best Practices
+
+1. **Use relay peers for production**: Browser-to-browser WebRTC should be supplemented with relay peers for reliability
+2. **Configure STUN/TURN servers**: Required for WebRTC NAT traversal
+3. **Set reasonable connection limits**: Default WebRTC max is 55 connections
+4. **Enable multicast for local networks**: Great for offline-first IoT applications
+5. **Monitor peer connections**: Track hi/bye events to understand network topology
+6. **Use AXE for large meshes**: Improves routing efficiency with many peers
+7. **Batch writes**: Group multiple puts to reduce network messages
+
+## Next Steps
+
+- Learn about [Conflict Resolution](/advanced/conflict-resolution) in distributed networks
+- Optimize [Performance](/advanced/performance) for your use case
+- Understand [CAP Theorem](/advanced/cap-theorem) tradeoffs
+- Deploy to [Production](/advanced/deployment)

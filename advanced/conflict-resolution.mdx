@@ -1,0 +1,473 @@
+---
+title: Conflict Resolution
+description: Understand how GUN resolves conflicts in distributed systems using state-based CRDTs and vector clocks
+---
+
+GUN uses a state-based CRDT (Conflict-free Replicated Data Type) approach to ensure eventual consistency across all peers, even in the presence of network partitions, concurrent updates, and offline operations.
+
+## State-Based CRDT
+
+GUN's conflict resolution is built on the concept of **state timestamps** - each property update includes a monotonically increasing timestamp that determines which value wins.
+
+### How It Works
+
+Every update in GUN includes metadata:
+
+```javascript
+{
+  _: {
+    '#': 'user/alice',           // Soul (unique ID)
+    '>': {                        // State vector
+      name: 1678901234567.001,    // Timestamp for 'name' property
+      age: 1678901234567.002      // Timestamp for 'age' property
+    }
+  },
+  name: 'Alice',
+  age: 30
+}
+```
+
+Source: `~/workspace/source/src/state.js:18-27`
+
+## State Vector Clocks
+
+### State Generation
+
+GUN generates unique, monotonically increasing timestamps:
+
+```javascript
+function State(){
+  var t = +new Date;
+  if(last < t){
+    return N = 0, last = t + State.drift;
+  }
+  return last = t + ((N += 1) / D) + State.drift;
+}
+```
+
+Source: `~/workspace/source/src/state.js:4-10`
+
+### Components
+
+- **Base timestamp**: Milliseconds since epoch
+- **Sub-millisecond counter**: Allows multiple updates within the same millisecond
+- **Drift compensation**: Accounts for clock skew across machines
+
+```javascript
+// 999 updates per millisecond are possible
+var D = 999;
+
+// Initialize counter
+var N = 0;
+
+// Last timestamp generated
+var last = -Infinity;
+```
+
+Source: `~/workspace/source/src/state.js:12`
+
+### Getting State Values
+
+```javascript
+// Get the state timestamp for a property
+var timestamp = State.is(node, 'propertyName');
+
+if(timestamp > 0){
+  console.log('Property last updated at:', timestamp);
+}
+```
+
+Source: `~/workspace/source/src/state.js:13-17`
+
+### Setting State Values
+
+```javascript
+// Create a node with state metadata
+var node = State.ify(
+  null,           // existing node or null
+  'name',         // property key
+  1678901234567,  // state timestamp
+  'Alice',        // value
+  'user/alice'    // soul (optional)
+);
+
+// Result:
+// {
+//   _: {
+//     '#': 'user/alice',
+//     '>': { name: 1678901234567 }
+//   },
+//   name: 'Alice'
+// }
+```
+
+Source: `~/workspace/source/src/state.js:18-27`
+
+## Last-Write-Wins (LWW)
+
+GUN uses a Last-Write-Wins strategy at the **property level**, not the document level.
+
+### Property-Level Resolution
+
+```javascript
+// Peer A writes at time 1000
+gun.get('user').put({name: 'Alice', age: 25});
+
+// Peer B writes at time 2000
+gun.get('user').put({name: 'Bob'});
+
+// Result: {name: 'Bob', age: 25}
+// 'Bob' wins for 'name', 'age' is unchanged
+```
+
+### Why Property-Level?
+
+This approach provides better merge semantics:
+
+```javascript
+// Two peers update different properties concurrently
+
+// Peer A
+gun.get('user').get('name').put('Alice');
+
+// Peer B (at nearly the same time)
+gun.get('user').get('age').put(30);
+
+// Both updates are preserved!
+// Result: {name: 'Alice', age: 30}
+```
+
+## Handling Conflicts
+
+### Automatic Merging
+
+GUN automatically merges concurrent updates:
+
+```javascript
+// Offline peer A
+gun.get('doc').put({title: 'Hello', count: 1});
+
+// Offline peer B (concurrent)
+gun.get('doc').put({subtitle: 'World', count: 2});
+
+// When peers reconnect and sync:
+// The update with the higher timestamp wins per-property
+// Result: {title: 'Hello', subtitle: 'World', count: 2 or 1}
+```
+
+### Conflict Detection
+
+You can detect conflicts by tracking state changes:
+
+```javascript
+let previousState = {};
+
+gun.get('doc').on(function(data){
+  const currentState = data._['>'];
+  
+  Object.keys(currentState).forEach(key => {
+    if(previousState[key] && 
+       currentState[key] !== previousState[key]){
+      console.log(`Conflict resolved on ${key}`);
+      console.log(`Old state: ${previousState[key]}`);
+      console.log(`New state: ${currentState[key]}`);
+    }
+  });
+  
+  previousState = {...currentState};
+});
+```
+
+## Dealing with Clock Skew
+
+### Drift Compensation
+
+GUN includes a drift parameter to handle clock differences:
+
+```javascript
+State.drift = 0; // Adjust for clock differences
+```
+
+Source: `~/workspace/source/src/state.js:11`
+
+### Best Practices
+
+1. **Use NTP**: Keep system clocks synchronized
+2. **Trust timestamps**: Don't try to "fix" timestamps
+3. **Monotonic clocks**: GUN ensures timestamps always increase locally
+
+## Advanced Conflict Strategies
+
+### Counter CRDTs
+
+For counters, use increment operations:
+
+```javascript
+// DON'T do this (race condition)
+gun.get('counter').once(val => {
+  gun.get('counter').put(val + 1); // WRONG!
+});
+
+// DO this instead (using sets for each increment)
+gun.get('counter').get(Gun.text.random()).put(1);
+
+// Then sum the set
+gun.get('counter').map().once((val, key) => {
+  count += val;
+});
+```
+
+### Set CRDTs
+
+GUN's `.set()` implements a grow-only set:
+
+```javascript
+// Add items to a set
+gun.get('users').set({name: 'Alice'});
+gun.get('users').set({name: 'Bob'});
+
+// Items are never removed, only marked as deleted
+gun.get('users').map().once((user, id) => {
+  // Each user has a unique ID
+  if(user){ // null means deleted
+    console.log(user);
+  }
+});
+```
+
+### Custom Resolution
+
+Implement custom conflict resolution by tracking versions:
+
+```javascript
+function customPut(gun, key, value){
+  const id = Gun.text.random();
+  const timestamp = Gun.state();
+  
+  gun.get(key).get('versions').get(id).put({
+    value: value,
+    timestamp: timestamp,
+    id: id
+  });
+  
+  // Application resolves conflicts by choosing a version
+}
+```
+
+## Vector Clocks vs State Timestamps
+
+GUN uses **state timestamps** rather than traditional vector clocks:
+
+### Vector Clocks
+
+```javascript
+// Traditional vector clock (NOT GUN)
+{
+  versions: {
+    'peer-A': 5,
+    'peer-B': 3,
+    'peer-C': 7
+  }
+}
+```
+
+### State Timestamps (GUN)
+
+```javascript
+// GUN's approach
+{
+  _: {
+    '>': {
+      'property1': 1678901234567.001,
+      'property2': 1678901234567.002
+    }
+  }
+}
+```
+
+**Advantages:**
+- Simpler to implement and reason about
+- Constant space per property (not per peer)
+- Works well for eventually consistent systems
+- Natural ordering with timestamps
+
+**Tradeoffs:**
+- Requires reasonably synchronized clocks
+- Cannot detect all concurrent updates (some are arbitrarily resolved)
+- May lose updates if clocks are severely misaligned
+
+## Data Integrity
+
+### Hash-Based Deduplication
+
+GUN uses content hashing to detect duplicate messages:
+
+```javascript
+// Messages include hashes for deduplication
+{
+  '#': 'msg-id-123',
+  '##': 'content-hash-456',  // Hash of message content
+  put: { /* data */ }
+}
+```
+
+Source: `~/workspace/source/src/mesh.js:73`
+
+### Preventing Loops
+
+The mesh layer prevents infinite message loops:
+
+```javascript
+// Track which peers already saw this message
+{
+  '><': 'peer1,peer2,peer3'  // Don't send back to these peers
+}
+```
+
+Source: `~/workspace/source/src/mesh.js:76`
+
+## Convergence Guarantees
+
+### Eventual Consistency
+
+GUN guarantees that all peers will eventually converge to the same state:
+
+1. **All updates are commutative**: Order doesn't matter
+2. **All updates are idempotent**: Applying twice has same effect
+3. **All peers use the same merge rules**: Deterministic conflict resolution
+
+### Convergence Time
+
+The time to convergence depends on:
+- Network latency between peers
+- Number of hops in the mesh network
+- Message batching intervals
+- Peer availability
+
+```javascript
+// Typical convergence: milliseconds to seconds
+// Under partition: converges when network heals
+```
+
+## Testing Conflicts
+
+### Simulating Offline Scenarios
+
+```javascript
+// Peer 1 (offline)
+const gun1 = Gun({peers: []});
+gun1.get('doc').put({a: 1});
+
+// Peer 2 (offline)
+const gun2 = Gun({peers: []});
+gun2.get('doc').put({b: 2});
+
+// Sync the peers
+gun1.opt({peers: ['http://localhost:8765/gun']});
+gun2.opt({peers: ['http://localhost:8765/gun']});
+
+// Both peers converge to: {a: 1, b: 2}
+```
+
+### Concurrent Writes
+
+```javascript
+const gun = Gun();
+const ref = gun.get('test');
+
+// Simulate concurrent writes
+Promise.all([
+  new Promise(r => ref.get('count').put(1, r)),
+  new Promise(r => ref.get('count').put(2, r)),
+  new Promise(r => ref.get('count').put(3, r))
+]).then(() => {
+  ref.get('count').once(val => {
+    console.log('Winner:', val); // 1, 2, or 3 (deterministic)
+  });
+});
+```
+
+## Best Practices
+
+1. **Embrace eventual consistency**: Don't rely on immediate consensus
+2. **Use property-level updates**: More granular merging
+3. **Avoid read-modify-write**: Use semantic operations instead
+4. **Implement tombstones**: Mark deletions rather than removing data
+5. **Monitor state timestamps**: Debug sync issues
+6. **Trust the CRDT**: Don't try to "fix" conflicts manually
+7. **Design for commutativity**: Order-independent operations
+8. **Test offline scenarios**: Ensure your app handles partitions gracefully
+
+## Common Patterns
+
+### Optimistic UI Updates
+
+```javascript
+function updateUI(newValue){
+  // Update UI immediately (optimistic)
+  displayValue(newValue);
+  
+  // Write to GUN
+  gun.get('data').put(newValue);
+  
+  // Listen for conflicts
+  gun.get('data').on(actualValue => {
+    if(actualValue !== newValue){
+      // Conflict resolved differently
+      displayValue(actualValue);
+    }
+  });
+}
+```
+
+### Collaborative Editing
+
+```javascript
+// Each character has a unique ID and state
+function insertChar(pos, char){
+  const id = Gun.text.random();
+  gun.get('doc').get('chars').get(id).put({
+    pos: pos,
+    char: char,
+    state: Gun.state()
+  });
+}
+
+// Reconstruct document by sorting characters
+gun.get('doc').get('chars').map().once((charObj, id) => {
+  // Rebuild document from character positions
+});
+```
+
+## Debugging
+
+### Inspecting State Metadata
+
+```javascript
+gun.get('node').once((data, key) => {
+  console.log('Soul:', data._['#']);
+  console.log('State vector:', data._['>']);
+  
+  Object.keys(data._['>']).forEach(prop => {
+    console.log(`${prop}: ${new Date(data._['>'][prop])}`);
+  });
+});
+```
+
+### Monitoring Conflicts
+
+```javascript
+gun.on('in', function(msg){
+  if(msg.put && msg['@']){
+    console.log('Incoming update:', msg);
+  }
+  this.to.next(msg);
+});
+```
+
+## Next Steps
+
+- Optimize [Performance](/advanced/performance) for high-throughput scenarios
+- Understand [CAP Theorem](/advanced/cap-theorem) tradeoffs in GUN
+- Learn about [Networking](/advanced/networking) protocols
+- Deploy to [Production](/advanced/deployment) with confidence

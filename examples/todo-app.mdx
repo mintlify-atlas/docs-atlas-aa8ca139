@@ -1,0 +1,625 @@
+---
+title: Build a Todo Application
+description: Learn CRUD operations with GUN by building a real-time todo app
+---
+
+# Build a Todo Application
+
+Learn CRUD (Create, Read, Update, Delete) operations in GUN by building a todo application. This tutorial covers data persistence, real-time sync, and state management.
+
+## What You'll Learn
+
+- Create items with `.set()` and `.put()`
+- Read data with `.on()` and `.once()`
+- Update existing items
+- Delete items by setting to `null`
+- Real-time synchronization
+- Local storage integration
+
+## Minimal Todo App
+
+Here's a complete todo app in vanilla JavaScript:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GUN Todo</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 600px;
+      margin: 40px auto;
+      padding: 20px;
+    }
+    
+    h1 {
+      color: #333;
+      text-align: center;
+    }
+    
+    form {
+      display: flex;
+      margin-bottom: 20px;
+      gap: 10px;
+    }
+    
+    input {
+      flex: 1;
+      padding: 10px;
+      border: 2px solid #ddd;
+      border-radius: 5px;
+      font-size: 16px;
+    }
+    
+    button {
+      padding: 10px 20px;
+      background: #0066cc;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    
+    button:hover {
+      background: #0052a3;
+    }
+    
+    ul {
+      list-style: none;
+      padding: 0;
+    }
+    
+    li {
+      padding: 15px;
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+    }
+    
+    li:hover {
+      background: #f0f0f0;
+    }
+    
+    .delete-btn {
+      background: #dc3545;
+      padding: 5px 10px;
+      font-size: 14px;
+    }
+    
+    .delete-btn:hover {
+      background: #c82333;
+    }
+  </style>
+</head>
+<body>
+  <h1>Todo List</h1>
+  
+  <form id="form">
+    <input id="input" placeholder="What needs to be done?" required>
+    <button type="submit">Add</button>
+  </form>
+  
+  <ul id="parentList"></ul>
+
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+  <script>
+    // Initialize GUN with local and remote storage
+    const gun = Gun([
+      'http://localhost:8765/gun',
+      'https://gun-manhattan.herokuapp.com/gun'
+    ]);
+    
+    // Get todos reference
+    const todos = gun.get('todos');
+    
+    // Get DOM elements
+    const parentList = document.getElementById('parentList');
+    const input = document.getElementById('input');
+    const form = document.getElementById('form');
+    
+    // Add new todo
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const todoText = input.value.trim();
+      if (!todoText) return;
+      
+      // Add to GUN
+      todos.set(todoText);
+      
+      // Clear input
+      input.value = '';
+      input.focus();
+    });
+    
+    // Delete todo
+    const deleteTodo = (id) => {
+      todos.get(id).put(null);
+      const element = document.getElementById(id);
+      if (element) {
+        element.style.display = 'none';
+      }
+    };
+    
+    // Listen for todos
+    todos.map().on((todo, id) => {
+      // Skip if null or already exists
+      if (!todo || document.getElementById(id)) return;
+      
+      // Create list item
+      const li = document.createElement('li');
+      li.id = id;
+      
+      // Create text span
+      const span = document.createElement('span');
+      span.textContent = todo;
+      
+      // Create delete button
+      const deleteBtn = document.createElement('button');
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.className = 'delete-btn';
+      deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        deleteTodo(id);
+      };
+      
+      // Append to list item
+      li.appendChild(span);
+      li.appendChild(deleteBtn);
+      
+      // Add to list
+      parentList.appendChild(li);
+    });
+  </script>
+</body>
+</html>
+```
+
+## React Todo Component
+
+Here's a more sophisticated React implementation:
+
+```jsx
+import React, { Component } from 'react';
+import Gun from 'gun/gun';
+import 'gun/lib/path';
+import './style.css';
+
+const formatTodos = todos => Object.keys(todos)
+  .map(key => ({ key, val: todos[key] }))
+  .filter(t => Boolean(t.val) && t.key !== '_');
+
+export default class Todos extends Component {
+  constructor({ gun }) {
+    super();
+    this.gun = gun.get('todos');
+    this.state = { newTodo: '', todos: [] };
+  }
+
+  componentWillMount() {
+    this.gun.on(todos => this.setState({
+      todos: formatTodos(todos)
+    }));
+  }
+
+  add = e => {
+    e.preventDefault();
+    if (!this.state.newTodo.trim()) return;
+    
+    this.gun.path(Gun.text.random()).put(this.state.newTodo);
+    this.setState({ newTodo: '' });
+  }
+
+  del = key => this.gun.path(key).put(null)
+
+  handleChange = e => this.setState({ newTodo: e.target.value })
+
+  render() {
+    return (
+      <div className="todos-container">
+        <h1>My Todos</h1>
+        
+        <form onSubmit={this.add}>
+          <input 
+            value={this.state.newTodo} 
+            onChange={this.handleChange}
+            placeholder="What needs to be done?"
+          />
+          <button onClick={this.add}>Add</button>
+        </form>
+        
+        <ul>
+          {this.state.todos.map(todo => 
+            <li key={todo.key} onClick={() => this.del(todo.key)}>
+              {todo.val}
+            </li>
+          )}
+        </ul>
+      </div>
+    );
+  }
+}
+
+// Usage:
+// const gun = Gun();
+// <Todos gun={gun} />
+```
+
+## React Hooks Version
+
+Modern React implementation using hooks:
+
+```jsx
+import React, { useState, useEffect, useRef } from 'react';
+import Gun from 'gun';
+
+const App = () => {
+  const gun = useRef(Gun()).current;
+  const newTodo = useRef();
+  const [todos, setTodos] = useState({});
+
+  useEffect(() => {
+    return gun
+      .get("todos")
+      .map()
+      .on((todo, id) => setTodos(todos => ({ ...todos, [id]: todo }))).off;
+  }, []);
+
+  const addTodo = (e) => {
+    e.preventDefault();
+    const title = newTodo.current.value.trim();
+    if (!title) return;
+    
+    gun.get("todos").set({ title });
+    newTodo.current.value = '';
+  };
+
+  const deleteTodo = (id) => {
+    gun.get("todos").get(id).put(null);
+  };
+
+  return (
+    <div>
+      <h1>Todos</h1>
+      
+      <ul>
+        {Object.entries(todos)
+          .filter(([, todo]) => todo && todo.title)
+          .map(([id, { title }]) => (
+            <li key={id}>
+              <span>{title}</span>
+              <button onClick={() => deleteTodo(id)}>Delete</button>
+            </li>
+          ))}
+      </ul>
+      
+      <form onSubmit={addTodo}>
+        <input ref={newTodo} placeholder="New todo" />
+        <button type="submit">Add</button>
+      </form>
+    </div>
+  );
+};
+
+export default App;
+```
+
+## Advanced Todo with Completion Status
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Advanced Todo</title>
+  <style>
+    .completed {
+      text-decoration: line-through;
+      opacity: 0.6;
+    }
+    
+    .todo-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      margin-bottom: 10px;
+    }
+    
+    input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      cursor: pointer;
+    }
+    
+    .todo-text {
+      flex: 1;
+    }
+  </style>
+</head>
+<body>
+  <h1>Advanced Todo List</h1>
+  
+  <form id="add-form">
+    <input id="new-todo" placeholder="What needs to be done?" required>
+    <button type="submit">Add</button>
+  </form>
+  
+  <div>
+    <button id="show-all">All</button>
+    <button id="show-active">Active</button>
+    <button id="show-completed">Completed</button>
+  </div>
+  
+  <ul id="todo-list"></ul>
+
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+  <script>
+    const gun = Gun();
+    const todos = gun.get('todos-advanced');
+    
+    const newTodoInput = document.getElementById('new-todo');
+    const addForm = document.getElementById('add-form');
+    const todoList = document.getElementById('todo-list');
+    
+    let filter = 'all'; // 'all', 'active', 'completed'
+    
+    // Add new todo
+    addForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = newTodoInput.value.trim();
+      if (!text) return;
+      
+      const todo = {
+        text: text,
+        completed: false,
+        createdAt: Gun.state()
+      };
+      
+      todos.set(todo);
+      newTodoInput.value = '';
+    });
+    
+    // Toggle completion
+    function toggleTodo(id, currentState) {
+      todos.get(id).get('completed').put(!currentState);
+    }
+    
+    // Delete todo
+    function deleteTodo(id) {
+      todos.get(id).put(null);
+      document.getElementById(id)?.remove();
+    }
+    
+    // Render todo item
+    function renderTodo(todo, id) {
+      if (!todo || !todo.text) return;
+      
+      // Apply filter
+      if (filter === 'active' && todo.completed) return;
+      if (filter === 'completed' && !todo.completed) return;
+      
+      // Check if exists
+      let li = document.getElementById(id);
+      if (!li) {
+        li = document.createElement('li');
+        li.id = id;
+        li.className = 'todo-item';
+        todoList.appendChild(li);
+      }
+      
+      // Update content
+      li.innerHTML = `
+        <input type="checkbox" ${todo.completed ? 'checked' : ''} 
+               onchange="toggleTodo('${id}', ${todo.completed})">
+        <span class="todo-text ${todo.completed ? 'completed' : ''}">
+          ${escapeHtml(todo.text)}
+        </span>
+        <button onclick="deleteTodo('${id}')">Delete</button>
+      `;
+    }
+    
+    // Listen for todos
+    todos.map().on((todo, id) => {
+      renderTodo(todo, id);
+    });
+    
+    // Filter buttons
+    document.getElementById('show-all').addEventListener('click', () => {
+      filter = 'all';
+      rerenderAll();
+    });
+    
+    document.getElementById('show-active').addEventListener('click', () => {
+      filter = 'active';
+      rerenderAll();
+    });
+    
+    document.getElementById('show-completed').addEventListener('click', () => {
+      filter = 'completed';
+      rerenderAll();
+    });
+    
+    // Re-render all todos
+    function rerenderAll() {
+      todoList.innerHTML = '';
+      todos.map().once((todo, id) => {
+        renderTodo(todo, id);
+      });
+    }
+    
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+    
+    // Make functions global for inline handlers
+    window.toggleTodo = toggleTodo;
+    window.deleteTodo = deleteTodo;
+  </script>
+</body>
+</html>
+```
+
+## CRUD Operations Explained
+
+### Create
+
+```javascript
+// Add to a set (generates random ID)
+todos.set('Buy milk');
+
+// Add with specific key
+todos.get('todo-1').put('Buy milk');
+
+// Add object
+todos.set({
+  text: 'Buy milk',
+  completed: false,
+  createdAt: Date.now()
+});
+```
+
+### Read
+
+```javascript
+// Read once
+todos.once((data) => {
+  console.log(data);
+});
+
+// Listen for changes (real-time)
+todos.on((data) => {
+  console.log('Updated:', data);
+});
+
+// Read all items in set
+todos.map().on((item, id) => {
+  console.log(id, item);
+});
+```
+
+### Update
+
+```javascript
+// Update entire object
+todos.get('todo-1').put({
+  text: 'Buy milk',
+  completed: true
+});
+
+// Update specific property
+todos.get('todo-1').get('completed').put(true);
+
+// Partial update (merge)
+todos.get('todo-1').get('completed').put(true);
+todos.get('todo-1').get('text').put('Buy organic milk');
+```
+
+### Delete
+
+```javascript
+// Delete by setting to null
+todos.get('todo-1').put(null);
+
+// Delete property
+todos.get('todo-1').get('completed').put(null);
+
+// Handle deletion in UI
+todos.map().on((todo, id) => {
+  if (todo === null) {
+    document.getElementById(id)?.remove();
+  }
+});
+```
+
+## Data Patterns
+
+### Using Sets vs. Objects
+
+```javascript
+// Set: Good for lists (auto-generates IDs)
+const todoSet = gun.get('todos');
+todoSet.set('Item 1'); // Creates unique ID
+todoSet.set('Item 2');
+
+// Object: Good for named properties
+const todoObj = gun.get('todo-1');
+todoObj.put({
+  text: 'Item 1',
+  completed: false
+});
+```
+
+### Timestamps and Sorting
+
+```javascript
+// Add timestamp
+const todo = {
+  text: 'Buy milk',
+  createdAt: Gun.state() // Vector clock
+};
+
+// Or JavaScript timestamp
+const todo = {
+  text: 'Buy milk',
+  createdAt: Date.now()
+};
+
+// Sort by timestamp
+const sortedTodos = Object.entries(todos)
+  .sort(([, a], [, b]) => a.createdAt - b.createdAt);
+```
+
+### Relations
+
+```javascript
+// Link todos to users
+const user = gun.user();
+const todos = user.get('todos');
+
+// Add todo
+todos.set({
+  text: 'Buy milk',
+  completed: false
+});
+
+// Reference in multiple places
+const todo = gun.get('todo-1').put({ text: 'Buy milk' });
+user.get('todos').set(todo);
+gun.get('all-todos').set(todo);
+```
+
+## Best Practices
+
+1. **Always validate input** before adding to GUN
+2. **Escape HTML** to prevent XSS attacks
+3. **Use timestamps** for sorting and conflict resolution
+4. **Handle null values** for deletions
+5. **Use `.once()`** for initial load, `.on()` for updates
+6. **Clean up listeners** to prevent memory leaks
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Chat App" icon="comments" href="/examples/chat-app">
+    Build a real-time chat application
+  </Card>
+  <Card title="Collaborative Editor" icon="pen" href="/examples/collaborative-editor">
+    Build a collaborative text editor
+  </Card>
+  <Card title="User Authentication" icon="lock" href="/sea/auth">
+    Add user accounts to your app
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/gun-constructor">
+    Explore the full API
+  </Card>
+</CardGroup>

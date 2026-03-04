@@ -1,0 +1,452 @@
+---
+title: Electron Integration
+description: Build desktop applications with GUN and Electron for offline-first experiences
+---
+
+# Electron Integration
+
+GUN works excellently with Electron, enabling you to build decentralized desktop applications with offline-first capabilities and peer-to-peer synchronization.
+
+## Installation
+
+<Steps>
+  <Step title="Set up Electron project">
+    Initialize your Electron project:
+    ```bash
+    npm init
+    npm install electron --save-dev
+    ```
+  </Step>
+
+  <Step title="Install GUN">
+    Add GUN to your project:
+    ```bash
+    npm install gun --save
+    ```
+  </Step>
+
+  <Step title="Configure main and renderer processes">
+    Set up GUN in both Electron's main process (Node.js) and renderer process (browser).
+  </Step>
+</Steps>
+
+## Project Structure
+
+A typical Electron + GUN project structure:
+
+```
+my-electron-app/
+├── main.js           # Main process (Node.js)
+├── preload.js        # Preload script
+├── renderer.js       # Renderer process script
+├── index.html        # App UI
+├── package.json
+└── data/            # GUN data storage
+```
+
+## Main Process Setup
+
+Set up GUN in Electron's main process to run a local relay peer:
+
+**main.js**:
+
+```javascript
+const { app, BrowserWindow } = require('electron')
+const path = require('path')
+const Gun = require('gun')
+const http = require('http')
+
+let mainWindow
+let gun
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true
+    }
+  })
+
+  mainWindow.loadFile('index.html')
+  
+  // Open DevTools in development
+  if (process.env.NODE_ENV === 'development') {
+    mainWindow.webContents.openDevTools()
+  }
+
+  mainWindow.on('closed', function () {
+    mainWindow = null
+  })
+}
+
+function startGunServer() {
+  const port = 8765
+  const server = http.createServer(Gun.serve(__dirname))
+  
+  gun = Gun({
+    web: server.listen(port),
+    file: path.join(app.getPath('userData'), 'gun-data'),
+    peers: [
+      // Add external peers for syncing
+      // 'https://gun-relay.example.com/gun'
+    ]
+  })
+  
+  console.log('GUN relay started on port', port)
+  
+  // Make gun accessible globally for main process
+  global.gun = gun
+}
+
+app.whenReady().then(() => {
+  startGunServer()
+  createWindow()
+
+  app.on('activate', function () {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', function () {
+  if (process.platform !== 'darwin') app.quit()
+})
+```
+
+## Renderer Process Setup
+
+In the renderer process, connect to the local GUN peer:
+
+**renderer.js**:
+
+```javascript
+const Gun = require('gun')
+
+// Connect to local GUN peer running in main process
+const gun = Gun({
+  peers: ['http://localhost:8765/gun']
+})
+
+// Example: Todo app
+const todos = gun.get('todos')
+const todoList = document.getElementById('todo-list')
+const todoInput = document.getElementById('todo-input')
+const addButton = document.getElementById('add-button')
+
+// Subscribe to todos
+todos.map().on((todo, id) => {
+  if (!todo || id === '_') return
+  
+  updateTodoUI(id, todo)
+})
+
+// Add new todo
+addButton.addEventListener('click', () => {
+  const text = todoInput.value.trim()
+  if (text) {
+    todos.get(Gun.text.random()).put({
+      text: text,
+      completed: false,
+      timestamp: Gun.state()
+    })
+    todoInput.value = ''
+  }
+})
+
+function updateTodoUI(id, todo) {
+  let item = document.getElementById(id)
+  
+  if (!item) {
+    item = document.createElement('li')
+    item.id = id
+    item.className = 'todo-item'
+    todoList.appendChild(item)
+  }
+  
+  item.innerHTML = `
+    <input type="checkbox" ${todo.completed ? 'checked' : ''}>
+    <span class="${todo.completed ? 'completed' : ''}">${todo.text}</span>
+    <button class="delete">Delete</button>
+  `
+  
+  // Toggle completion
+  item.querySelector('input').addEventListener('change', (e) => {
+    todos.get(id).put({ completed: e.target.checked })
+  })
+  
+  // Delete todo
+  item.querySelector('.delete').addEventListener('click', () => {
+    todos.get(id).put(null)
+    item.remove()
+  })
+}
+```
+
+**index.html**:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>GUN Electron Todo</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    .todo-item {
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .todo-item input[type="checkbox"] {
+      margin-right: 10px;
+    }
+    .todo-item span {
+      flex: 1;
+    }
+    .todo-item span.completed {
+      text-decoration: line-through;
+      color: #999;
+    }
+    .todo-item button {
+      background: #ff4444;
+      color: white;
+      border: none;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .add-todo {
+      display: flex;
+      margin-bottom: 20px;
+    }
+    .add-todo input {
+      flex: 1;
+      padding: 10px;
+      font-size: 16px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+    }
+    .add-todo button {
+      padding: 10px 20px;
+      margin-left: 10px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>GUN Electron Todo</h1>
+  
+  <div class="add-todo">
+    <input type="text" id="todo-input" placeholder="What needs to be done?">
+    <button id="add-button">Add</button>
+  </div>
+  
+  <ul id="todo-list"></ul>
+  
+  <script src="renderer.js"></script>
+</body>
+</html>
+```
+
+## Using with Electron Forge
+
+If you're using Electron Forge:
+
+**package.json**:
+
+```json
+{
+  "name": "gun-electron-app",
+  "version": "1.0.0",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron-forge start",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
+  },
+  "dependencies": {
+    "gun": "^0.2020.1240"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "^6.0.0",
+    "@electron-forge/maker-deb": "^6.0.0",
+    "@electron-forge/maker-rpm": "^6.0.0",
+    "@electron-forge/maker-squirrel": "^6.0.0",
+    "@electron-forge/maker-zip": "^6.0.0",
+    "electron": "^22.0.0"
+  }
+}
+```
+
+## Preload Script (Optional)
+
+For better security with context isolation:
+
+**preload.js**:
+
+```javascript
+const { contextBridge } = require('electron')
+const Gun = require('gun')
+
+// Expose GUN to renderer process safely
+contextBridge.exposeInMainWorld('gunAPI', {
+  createGun: (opts) => Gun(opts),
+  Gun: Gun
+})
+```
+
+Then in renderer:
+
+```javascript
+const gun = window.gunAPI.createGun({
+  peers: ['http://localhost:8765/gun']
+})
+```
+
+## Data Persistence
+
+GUN data is stored in Electron's userData directory:
+
+```javascript
+const userDataPath = app.getPath('userData')
+const gunDataPath = path.join(userDataPath, 'gun-data')
+
+const gun = Gun({
+  file: gunDataPath,
+  web: server
+})
+```
+
+**Data location by platform:**
+- Windows: `%APPDATA%\<app-name>\gun-data`
+- macOS: `~/Library/Application Support/<app-name>/gun-data`
+- Linux: `~/.config/<app-name>/gun-data`
+
+## User Authentication
+
+Implement user authentication with GUN's SEA:
+
+```javascript
+require('gun/sea')
+
+const gun = Gun(['http://localhost:8765/gun'])
+const user = gun.user()
+
+// Sign up
+function signup(username, password) {
+  return new Promise((resolve, reject) => {
+    user.create(username, password, (ack) => {
+      if (ack.err) reject(ack.err)
+      else resolve(ack)
+    })
+  })
+}
+
+// Login
+function login(username, password) {
+  return new Promise((resolve, reject) => {
+    user.auth(username, password, (ack) => {
+      if (ack.err) reject(ack.err)
+      else resolve(ack)
+    })
+  })
+}
+
+// Store user-specific data
+user.get('profile').put({
+  name: 'John Doe',
+  email: 'john@example.com'
+})
+```
+
+## Multi-Window Synchronization
+
+Sync data between multiple windows:
+
+```javascript
+// In main.js
+const windows = new Set()
+
+function createWindow() {
+  const win = new BrowserWindow({...})
+  windows.add(win)
+  
+  win.on('closed', () => {
+    windows.delete(win)
+  })
+  
+  return win
+}
+
+// All windows connect to the same local GUN peer
+// Data automatically syncs between them
+```
+
+## Building & Distribution
+
+Build your Electron app with GUN:
+
+```bash
+# Using Electron Forge
+npm run make
+
+# Using Electron Builder
+npm install electron-builder --save-dev
+npm run build
+```
+
+**electron-builder configuration**:
+
+```json
+{
+  "build": {
+    "appId": "com.example.gunapp",
+    "files": [
+      "**/*",
+      "!data/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
+```
+
+## Best Practices
+
+1. **Run GUN in main process**: Keep the relay peer in the main process for better control
+2. **Use userData path**: Store GUN data in Electron's userData directory
+3. **Enable context isolation**: Use preload scripts for security
+4. **Handle app lifecycle**: Properly cleanup GUN connections on app quit
+5. **Sync with remote peers**: Connect to external peers for cross-device sync
+6. **Implement auto-updates**: Keep your app and GUN version up to date
+
+## Example Projects
+
+- [GUN Electron Test](https://github.com/PenguinMan98/electrontest) - Basic Electron + GUN setup
+- Check the [GUN examples directory](https://github.com/amark/gun/tree/master/examples) for more patterns
+
+## Next Steps
+
+- Learn about [GUN's SEA for encryption](/sea/overview)
+- Explore [peer-to-peer networking](/advanced/networking)
+- Set up [remote relay peers](/advanced/deployment)
+- Build [offline-first features](/concepts/offline-first)

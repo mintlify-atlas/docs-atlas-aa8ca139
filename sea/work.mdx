@@ -1,0 +1,466 @@
+---
+title: 'SEA.work()'
+description: 'Proof-of-work and key derivation with PBKDF2'
+---
+
+# SEA.work()
+
+Perform proof-of-work computations using PBKDF2 (Password-Based Key Derivation Function 2) or compute SHA hashes. Primarily used for password hardening and key derivation.
+
+## Syntax
+
+```javascript
+const result = await SEA.work(data, salt)
+SEA.work(data, salt, callback)
+SEA.work(data, salt, callback, options)
+```
+
+## Parameters
+
+- **data** (string|any): Data to process (password, string, or any JSON-serializable value)
+- **salt** (string|buffer, optional): Salt for PBKDF2 (random if not provided)
+- **callback** (function, optional): Called with result
+- **options** (object, optional):
+  - `name`: Algorithm name (default: 'PBKDF2', or 'SHA-256', 'SHA-1')
+  - `iterations`: PBKDF2 iterations (default: 100,000)
+  - `length`: Output length in bits (default: 512)
+  - `hash`: Hash algorithm for PBKDF2 (default: SHA-256)
+  - `encode`: Output encoding (default: 'base64')
+  - `salt`: Alternative way to specify salt
+
+## Returns
+
+A Promise that resolves to a base64-encoded string (or custom encoding).
+
+## Basic Usage
+
+### Proof-of-Work (PBKDF2)
+
+```javascript
+// Hash a password with random salt
+const proof = await SEA.work('my-password');
+console.log(proof);  // Base64-encoded PBKDF2 output
+```
+
+### With Specific Salt
+
+```javascript
+const salt = 'random-salt-value';
+const proof = await SEA.work('my-password', salt);
+```
+
+### SHA-256 Hashing
+
+```javascript
+const hash = await SEA.work('data', null, null, { name: 'SHA-256' });
+console.log(hash);  // Base64-encoded SHA-256 hash
+```
+
+### With Callback
+
+```javascript
+SEA.work('password', 'salt', (proof) => {
+  console.log('Proof:', proof);
+});
+```
+
+## How It Works
+
+Reference: `~/workspace/source/sea/work.js:9-40`
+
+### PBKDF2 Mode (Default)
+
+```javascript
+// 1. Generate random salt (if not provided)
+const salt = providedSalt || randomBytes(9);
+
+// 2. Import password as key material
+const keyMaterial = await crypto.subtle.importKey(
+  'raw',
+  textEncoder.encode(password),
+  { name: 'PBKDF2' },
+  false,
+  ['deriveBits']
+);
+
+// 3. Derive bits using PBKDF2
+const derived = await crypto.subtle.deriveBits(
+  {
+    name: 'PBKDF2',
+    iterations: 100000,
+    salt: textEncoder.encode(salt),
+    hash: 'SHA-256'
+  },
+  keyMaterial,
+  512  // Output 512 bits
+);
+
+// 4. Encode as base64
+return base64Encode(derived);
+```
+
+### SHA Mode
+
+```javascript
+// 1. Hash the data
+const hash = await crypto.subtle.digest(
+  { name: 'SHA-256' },
+  textEncoder.encode(data)
+);
+
+// 2. Encode as base64
+return base64Encode(hash);
+```
+
+## Use Cases
+
+### Password Hashing
+
+```javascript
+const hashPassword = async (password, salt) => {
+  salt = salt || SEA.random(9).toString('base64');
+  const proof = await SEA.work(password, salt);
+  
+  return {
+    proof: proof,
+    salt: salt
+  };
+};
+
+const { proof, salt } = await hashPassword('user-password');
+// Store both proof and salt
+```
+
+### Password Verification
+
+```javascript
+const verifyPassword = async (password, storedProof, storedSalt) => {
+  const proof = await SEA.work(password, storedSalt);
+  return proof === storedProof;
+};
+
+const isValid = await verifyPassword('user-input', proof, salt);
+```
+
+### Key Derivation for Encryption
+
+```javascript
+// Derive encryption key from password
+const deriveEncryptionKey = async (password, salt) => {
+  return await SEA.work(password, salt, null, {
+    iterations: 100000,
+    length: 256  // 256-bit key for AES
+  });
+};
+
+const key = await deriveEncryptionKey('master-password', salt);
+const encrypted = await SEA.encrypt(data, key);
+```
+
+### Content Hashing
+
+```javascript
+// Create content hash for integrity checking
+const contentHash = await SEA.work(content, null, null, {
+  name: 'SHA-256'
+});
+
+store(content, { hash: contentHash });
+
+// Later, verify integrity
+const newHash = await SEA.work(retrievedContent, null, null, {
+  name: 'SHA-256'
+});
+if (newHash === contentHash) {
+  console.log('Content integrity verified');
+}
+```
+
+### User Authentication
+
+This is how SEA uses `work()` internally for user creation:
+
+Reference: `~/workspace/source/sea/create.js:41-42`
+
+```javascript
+// During user creation
+const salt = String.random(64);
+const proof = await SEA.work(password, salt);
+
+// Proof is used to encrypt private keys
+const encrypted = await SEA.encrypt(privateKeys, proof);
+
+// Store salt and encrypted keys
+user.put({
+  auth: JSON.stringify({
+    ek: encrypted,
+    s: salt
+  })
+});
+```
+
+## Options
+
+### Custom Iterations
+
+Increase security (slower) or decrease for faster operations:
+
+```javascript
+// High security (slower)
+const proof = await SEA.work('password', salt, null, {
+  iterations: 500000  // 5x default
+});
+
+// Faster (less secure)
+const proof = await SEA.work('password', salt, null, {
+  iterations: 10000
+});
+```
+
+### Custom Key Length
+
+```javascript
+const proof = await SEA.work('password', salt, null, {
+  length: 256  // 256 bits instead of default 512
+});
+```
+
+### Different Hash Functions
+
+```javascript
+// SHA-256 hash
+const sha256 = await SEA.work(data, null, null, { name: 'SHA-256' });
+
+// SHA-1 hash (not recommended for security)
+const sha1 = await SEA.work(data, null, null, { name: 'SHA-1' });
+
+// SHA-512 (via custom options)
+const sha512 = await SEA.work(data, null, null, {
+  name: 'SHA-512'
+});
+```
+
+### Custom Encoding
+
+```javascript
+// Hex encoding
+const hex = await SEA.work('password', salt, null, {
+  encode: 'hex'
+});
+
+// UTF-8 encoding (not recommended)
+const utf8 = await SEA.work('password', salt, null, {
+  encode: 'utf8'
+});
+```
+
+## PBKDF2 Details
+
+### Algorithm Parameters
+
+Default PBKDF2 configuration:
+
+Reference: `~/workspace/source/sea/settings.js:218`
+
+```javascript
+{
+  name: 'PBKDF2',
+  iterations: 100000,    // 100k iterations
+  hash: 'SHA-256',       // PRF hash function
+  length: 512            // 512-bit output (64 bytes)
+}
+```
+
+### Security Level
+
+- **Iterations**: 100,000 (as of 2024, OWASP recommends 600,000+ for passwords)
+- **Hash**: SHA-256 (PRF - Pseudorandom Function)
+- **Salt**: Minimum 9 bytes random
+- **Output**: 64 bytes (512 bits)
+
+### Why PBKDF2?
+
+1. **Slow by design**: Computationally expensive to brute force
+2. **Salting**: Prevents rainbow table attacks
+3. **Iteration count**: Increases computational cost for attackers
+4. **Standard**: NIST approved (SP 800-132)
+
+## Performance
+
+### Timing
+
+```javascript
+const start = Date.now();
+const proof = await SEA.work('password', salt);
+console.log('Took', Date.now() - start, 'ms');
+// Typically 50-200ms depending on device
+```
+
+### Iteration Impact
+
+- **10,000 iterations**: ~10ms
+- **100,000 iterations**: ~50-100ms (default)
+- **500,000 iterations**: ~250-500ms
+- **1,000,000 iterations**: ~500ms-1s
+
+<Warning>
+  Higher iteration counts provide more security but increase authentication time. Balance security needs with user experience.
+</Warning>
+
+## Security Considerations
+
+### Salt Requirements
+
+- **Uniqueness**: Each password should have unique salt
+- **Randomness**: Use cryptographically secure random
+- **Length**: Minimum 8 bytes, 9+ recommended
+- **Storage**: Store salt alongside hashed password
+
+```javascript
+// Good: unique random salt per password
+const salt1 = SEA.random(9);
+const salt2 = SEA.random(9);  // Different salt
+
+// Bad: reusing same salt
+const sameSalt = 'fixed-salt';  // Don't do this!
+```
+
+### Password Strength
+
+PBKDF2 hardens weak passwords but doesn't make them strong:
+
+```javascript
+// Still weak
+const proof = await SEA.work('password123', salt);
+
+// Better
+const proof = await SEA.work('Tr0ub4dor&3', salt);
+
+// Best: high entropy
+const proof = await SEA.work('correct-horse-battery-staple', salt);
+```
+
+### Rainbow Tables
+
+Salting prevents rainbow table attacks:
+
+```javascript
+// Each user has unique salt
+const user1 = await SEA.work('password', salt1);
+const user2 = await SEA.work('password', salt2);
+// user1 !== user2 (different salts)
+```
+
+### Timing Attacks
+
+PBKDF2 is designed to be constant-time for the same iteration count.
+
+## Common Patterns
+
+### Secure Password Storage
+
+```javascript
+const secureStorePassword = async (password) => {
+  const salt = SEA.random(16).toString('base64');
+  const hash = await SEA.work(password, salt, null, {
+    iterations: 600000  // OWASP 2023 recommendation
+  });
+  
+  return {
+    hash: hash,
+    salt: salt,
+    algorithm: 'PBKDF2-SHA256',
+    iterations: 600000
+  };
+};
+```
+
+### Progressive Strengthening
+
+Increase iterations over time:
+
+```javascript
+const currentIterations = 100000;
+const targetIterations = 600000;
+
+const rehashIfNeeded = async (password, storedHash, storedIterations) => {
+  if (storedIterations < targetIterations) {
+    // Re-hash with higher iteration count
+    const newHash = await SEA.work(password, salt, null, {
+      iterations: targetIterations
+    });
+    updateStoredHash(newHash, targetIterations);
+  }
+};
+```
+
+### Key Stretching
+
+```javascript
+const stretchKey = async (weakKey) => {
+  // Strengthen a weak key
+  return await SEA.work(weakKey, null, null, {
+    iterations: 100000
+  });
+};
+
+const strongKey = await stretchKey('user-input-key');
+```
+
+### Data Integrity
+
+```javascript
+const createChecksum = async (data) => {
+  return await SEA.work(JSON.stringify(data), null, null, {
+    name: 'SHA-256'
+  });
+};
+
+const checksum = await createChecksum(importantData);
+store(importantData, { checksum });
+```
+
+## Comparison with Alternatives
+
+### vs. bcrypt
+
+- **PBKDF2**: NIST approved, Web Crypto native, widely supported
+- **bcrypt**: Designed for passwords, memory-hard, not in Web Crypto API
+
+### vs. scrypt
+
+- **PBKDF2**: Less memory-intensive, faster
+- **scrypt**: Memory-hard, better against hardware attacks, not in Web Crypto API
+
+### vs. Argon2
+
+- **PBKDF2**: Older, well-tested, native browser support
+- **Argon2**: Modern, winner of password hashing competition, requires library
+
+## Error Handling
+
+```javascript
+try {
+  const proof = await SEA.work(password, salt);
+  console.log('Success:', proof);
+} catch (err) {
+  console.error('PBKDF2 failed:', err);
+  // Possible issues:
+  // - Web Crypto API not available
+  // - Invalid parameters
+  // - Out of memory
+}
+```
+
+## Browser Compatibility
+
+Requires Web Crypto API support:
+
+- Chrome/Edge 37+
+- Firefox 34+
+- Safari 11+
+- Node.js with `@peculiar/webcrypto` polyfill
+
+<Warning>
+  PBKDF2 requires HTTPS in browsers (Web Crypto API security requirement).
+</Warning>

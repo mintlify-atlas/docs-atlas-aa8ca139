@@ -1,0 +1,305 @@
+---
+title: '.map()'
+description: 'Iterate over collections and objects'
+---
+
+## .map()
+
+The `.map()` method iterates over all properties in a collection, calling a callback for each item. It's essential for working with sets, lists, and any object with dynamic keys.
+
+### Signature
+
+```javascript
+gun.map()
+gun.map(callback)
+gun.map(filter)
+```
+
+### Parameters
+
+<ParamField path="callback" type="function" optional>
+  **Experimental:** Function called for each item to transform the data.
+  
+  **Signature:** `function(data, key, message, event)`
+  
+  - `data` - The item data
+  - `key` - The item's key/ID
+  - `message` - Full message object
+  - `event` - Event control object
+  
+  **Return value:**
+  - Return the data to pass it through unchanged
+  - Return modified data to transform it
+  - Return `undefined` to filter out the item
+  - Return a GUN reference to chain to it
+</ParamField>
+
+<ParamField path="filter" type="object" optional>
+  Lexical filter object to match specific keys
+  
+  <Expandable title="properties">
+    <ParamField path="." type="string | RegExp">
+      Pattern to match against keys
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+Returns a GUN chain that emits each item individually. Chain with `.on()` or `.once()` to process items.
+
+### Examples
+
+#### Basic Iteration
+
+```javascript
+// Display all todos
+gun.get('todos').map().on(function(todo, key){
+  console.log('Todo ' + key + ':', todo.text)
+})
+
+// One-time read of all items
+gun.get('todos').map().once(function(todo, key){
+  console.log('Todo ' + key + ':', todo.text)
+})
+```
+
+#### Realtime List Rendering
+
+```javascript
+// Render a todo list that updates in realtime
+var todosEl = document.getElementById('todos')
+
+gun.get('todos').map().on(function(todo, id){
+  var li = document.getElementById(id) || document.createElement('li')
+  li.id = id
+  li.textContent = todo.text
+  
+  if(todo.done){
+    li.style.textDecoration = 'line-through'
+  }
+  
+  if(!li.parentNode){
+    todosEl.appendChild(li)
+  }
+})
+```
+
+#### Nested Maps
+
+```javascript
+// Iterate over users and their posts
+gun.get('users').map().on(function(user, userId){
+  console.log('User:', user.name)
+  
+  gun.get('users').get(userId).get('posts').map().on(function(post){
+    console.log('  Post:', post.title)
+  })
+})
+```
+
+#### Transform with Callback (Experimental)
+
+```javascript
+// Filter and transform items
+gun.get('todos').map(function(todo, key){
+  // Skip completed todos
+  if(todo.done) return undefined
+  
+  // Transform the data
+  return {
+    id: key,
+    text: todo.text,
+    priority: todo.priority || 'normal'
+  }
+}).on(function(transformed){
+  console.log('Active todo:', transformed)
+})
+```
+
+#### Lexical Filtering
+
+```javascript
+// Only match keys starting with 'user:'
+gun.get('data').map({'.' : 'user:*'}).on(function(user){
+  console.log('User:', user)
+})
+
+// Match specific pattern
+gun.get('events').map({'.' : /2024-.*/}).on(function(event){
+  console.log('2024 event:', event)
+})
+```
+
+#### Chat Application
+
+```javascript
+var messagesEl = document.getElementById('messages')
+
+// Listen for new messages
+gun.get('chat/room1').get('messages').map().on(function(msg, id){
+  var div = document.getElementById(id)
+  if(!div){
+    div = document.createElement('div')
+    div.id = id
+    messagesEl.appendChild(div)
+  }
+  
+  div.innerHTML = `
+    <strong>${msg.from}</strong>: ${msg.text}
+    <span class="time">${new Date(msg.timestamp).toLocaleTimeString()}</span>
+  `
+})
+
+// Send a message
+gun.get('chat/room1').get('messages').set({
+  from: 'alice',
+  text: 'Hello everyone!',
+  timestamp: Date.now()
+})
+```
+
+#### Count Items
+
+```javascript
+// Count items in a collection
+var count = 0
+gun.get('items').map().once(function(){
+  count++
+})
+
+setTimeout(function(){
+  console.log('Total items:', count)
+}, 100)
+```
+
+#### Filter and Sort
+
+```javascript
+// Collect and sort items
+var items = []
+
+gun.get('products').map().once(function(product, key){
+  items.push({
+    id: key,
+    name: product.name,
+    price: product.price
+  })
+})
+
+setTimeout(function(){
+  // Sort by price
+  items.sort((a, b) => a.price - b.price)
+  items.forEach(item => console.log(item.name, item.price))
+}, 100)
+```
+
+### Implementation Details
+
+From the source code (map.js:16-37):
+
+```javascript
+Gun.chain.map = function(cb, opt, t){
+  var gun = this, cat = gun._, lex, chain;
+  if(Object.plain(cb)){ lex = cb['.']? cb : {'.': cb}; cb = u }
+  if(!cb){
+    if(chain = cat.each){ return chain }
+    (cat.each = chain = gun.chain())._.lex = lex || chain._.lex || cat.lex;
+    chain._.nix = gun.back('nix');
+    gun.on('in', map, chain._);
+    return chain;
+  }
+  // ... callback version (experimental)
+}
+
+function map(msg){ this.to.next(msg);
+  var cat = this.as, gun = msg.$, at = gun._, put = msg.put, tmp;
+  if(!at.soul && !msg.$$){ return }
+  if((tmp = cat.lex) && !String.match(msg.get|| (put||'')['.'], tmp['.'] || tmp['#'] || tmp)){ return }
+  Gun.on.link(msg, cat);
+}
+```
+
+The `.map()` method:
+1. Creates a new chain that listens for all child updates
+2. Fires the chain callback for each property/item
+3. Optionally filters using lexical matching
+4. Experimental: transforms data when callback is provided
+5. Automatically follows links to nested data
+
+### Map vs Iteration
+
+| Feature | .map() | .get(key) |
+|---------|---------|------------|
+| **Purpose** | Iterate all items | Access specific item |
+| **Keys** | Dynamic/unknown | Known |
+| **Usage** | Collections, sets | Single values |
+| **Returns** | Chain per item | Single chain |
+
+### Performance Considerations
+
+```javascript
+// ❌ Inefficient - creates many subscriptions
+gun.get('items').map().on(function(item){
+  gun.get('users').map().on(function(user){
+    // N × M subscriptions!
+  })
+})
+
+// ✅ Better - limit nested subscriptions
+gun.get('items').map().once(function(item){
+  gun.get('users').get(item.userId).once(function(user){
+    console.log(user)
+  })
+})
+```
+
+### Empty Sets
+
+```javascript
+// Map over empty set does nothing
+gun.get('emptySet').map().on(function(item){
+  // Never called if set is empty
+})
+
+// To detect empty sets
+var found = false
+gun.get('mySet').map().once(function(){
+  found = true
+})
+
+setTimeout(function(){
+  if(!found){
+    console.log('Set is empty')
+  }
+}, 100)
+```
+
+### Reuse Map Chain
+
+```javascript
+// Reusable map reference
+var allTodos = gun.get('todos').map()
+
+// Use it multiple times
+allTodos.once(function(todo){
+  console.log('Todo:', todo)
+})
+
+allTodos.on(function(todo){
+  updateUI(todo)
+})
+
+// Both callbacks receive the same data
+```
+
+### Notes
+
+- `.map()` without arguments returns a chain for iteration
+- Use `.once()` after `.map()` for one-time iteration
+- Use `.on()` after `.map()` for realtime updates
+- The callback version (with function argument) is experimental
+- Map automatically resolves links to the linked data
+- No guaranteed iteration order - items arrive as they're loaded
+- For empty collections, callbacks never fire
+- Map is perfect for working with `.set()` collections

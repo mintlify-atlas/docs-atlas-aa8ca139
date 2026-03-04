@@ -1,0 +1,411 @@
+---
+title: 'SEA.encrypt()'
+description: 'Encrypt data with AES-GCM encryption'
+---
+
+# SEA.encrypt()
+
+Encrypt data using AES-GCM symmetric encryption. The data can be decrypted by anyone with the same encryption key.
+
+## Syntax
+
+```javascript
+const encrypted = await SEA.encrypt(data, key)
+SEA.encrypt(data, key, callback)
+SEA.encrypt(data, key, callback, options)
+```
+
+## Parameters
+
+- **data** (any): Data to encrypt (strings, objects, arrays, numbers)
+- **key** (string|object): Encryption key or key pair with `epriv` property
+- **callback** (function, optional): Called with encrypted result
+- **options** (object, optional):
+  - `encode`: Encoding for output (default: 'base64')
+  - `name`: Encryption algorithm (default: 'AES-GCM')
+  - `raw`: Return raw object instead of SEA-prefixed string (default: false)
+
+## Returns
+
+A Promise that resolves to an encrypted string:
+
+```javascript
+"SEA{\"ct\":\"...\",\"iv\":\"...\",\"s\":\"...\"}"
+```
+
+Or if `raw: true`, returns an object:
+
+```javascript
+{
+  ct: 'encrypted_ciphertext',
+  iv: 'initialization_vector',
+  s: 'salt'
+}
+```
+
+## Basic Usage
+
+### Encrypt with Password
+
+```javascript
+const data = { secret: 'my secret data' };
+const password = 'my-secure-password';
+
+const encrypted = await SEA.encrypt(data, password);
+console.log(encrypted);
+// SEA{"ct":"base64...","iv":"base64...","s":"base64..."}
+```
+
+### Encrypt with Key Pair
+
+```javascript
+const pair = await SEA.pair();
+const encrypted = await SEA.encrypt('secret message', pair);
+// Uses pair.epriv as the encryption key
+```
+
+### With Callback
+
+```javascript
+SEA.encrypt('sensitive data', 'password', (encrypted) => {
+  console.log('Encrypted:', encrypted);
+});
+```
+
+## How It Works
+
+Reference: `~/workspace/source/sea/encrypt.js:9-38`
+
+1. **Key Derivation**: Derives AES-GCM key from input key + random salt
+2. **Random Values**: Generates random salt (9 bytes) and IV (15 bytes)
+3. **Stringify**: Converts data to JSON string if not already a string
+4. **Encryption**: Encrypts using AES-GCM-256
+5. **Output**: Returns base64-encoded ciphertext, IV, and salt
+
+### Encryption Process
+
+```javascript
+// 1. Generate random values
+const salt = shim.random(9);      // 9-byte random salt
+const iv = shim.random(15);       // 15-byte initialization vector
+
+// 2. Derive AES key
+const aesKey = await deriveKey(key, salt);
+
+// 3. Encrypt data
+const ciphertext = await crypto.subtle.encrypt(
+  { name: 'AES-GCM', iv: iv },
+  aesKey,
+  data
+);
+
+// 4. Encode and return
+return {
+  ct: base64(ciphertext),
+  iv: base64(iv),
+  s: base64(salt)
+};
+```
+
+## Encrypted Data Structure
+
+### Default Format (String)
+
+```javascript
+"SEA{\"ct\":\"Q2lwaGVydGV4dA==\",\"iv\":\"SW5pdFZlY3Rvcg==\",\"s\":\"U2FsdA==\"}"
+```
+
+### Raw Format (Object)
+
+With `raw: true` option:
+
+```javascript
+{
+  ct: 'Q2lwaGVydGV4dA==',  // Ciphertext (base64)
+  iv: 'SW5pdFZlY3Rvcg==',  // Initialization Vector (base64)
+  s: 'U2FsdA=='            // Salt (base64)
+}
+```
+
+### Field Descriptions
+
+- **ct**: Encrypted ciphertext (AES-GCM output)
+- **iv**: Initialization vector (random, unique per encryption)
+- **s**: Salt (random, used for key derivation)
+
+## Encryption Key Types
+
+### Using a Password
+
+```javascript
+const encrypted = await SEA.encrypt(data, 'password123');
+// Password is hashed with salt to derive AES key
+```
+
+### Using Key Pair's epriv
+
+```javascript
+const pair = await SEA.pair();
+const encrypted = await SEA.encrypt(data, pair);
+// Uses pair.epriv as encryption key
+```
+
+### Using epriv Directly
+
+```javascript
+const encrypted = await SEA.encrypt(data, pair.epriv);
+```
+
+### Using Shared Secret
+
+```javascript
+const alice = await SEA.pair();
+const bob = await SEA.pair();
+
+// Derive shared secret
+const secret = await SEA.secret(bob.epub, alice);
+
+// Encrypt with shared secret
+const encrypted = await SEA.encrypt(data, secret);
+// Only Alice and Bob can decrypt
+```
+
+## Data Types
+
+### Strings
+
+```javascript
+const encrypted = await SEA.encrypt('Hello World', 'password');
+```
+
+### Objects
+
+```javascript
+const encrypted = await SEA.encrypt(
+  { name: 'Alice', age: 30 },
+  'password'
+);
+```
+
+### Arrays
+
+```javascript
+const encrypted = await SEA.encrypt(
+  [1, 2, 3, 'four'],
+  'password'
+);
+```
+
+### Numbers
+
+```javascript
+const encrypted = await SEA.encrypt(42, 'password');
+```
+
+<Warning>
+  **Undefined values are not allowed.** Attempting to encrypt `undefined` will throw an error: "`undefined` not allowed."
+</Warning>
+
+## Options
+
+### Raw Output
+
+Return object instead of string:
+
+```javascript
+const raw = await SEA.encrypt(data, key, null, { raw: true });
+console.log(raw.ct);  // Access ciphertext directly
+console.log(raw.iv);  // Access IV directly
+console.log(raw.s);   // Access salt directly
+```
+
+### Custom Encoding
+
+```javascript
+const encrypted = await SEA.encrypt(data, key, null, {
+  encode: 'hex'  // Use hex instead of base64
+});
+```
+
+### Custom Algorithm
+
+```javascript
+const encrypted = await SEA.encrypt(data, key, null, {
+  name: 'AES-GCM'  // Default; other modes not currently supported
+});
+```
+
+## Use Cases
+
+### Private User Data
+
+```javascript
+// Store encrypted private data
+const secrets = {
+  ssn: '123-45-6789',
+  creditCard: '4111-1111-1111-1111'
+};
+
+const encrypted = await SEA.encrypt(secrets, user._.sea);
+user.get('private').put(encrypted);
+```
+
+### End-to-End Encrypted Messages
+
+```javascript
+// Alice sends encrypted message to Bob
+const alice = await SEA.pair();
+const bob = await SEA.pair();
+
+// Derive shared secret
+const secret = await SEA.secret(bob.epub, alice);
+
+// Encrypt message
+const encrypted = await SEA.encrypt('Secret message', secret);
+
+// Bob can decrypt with same shared secret
+const bobSecret = await SEA.secret(alice.epub, bob);
+const decrypted = await SEA.decrypt(encrypted, bobSecret);
+```
+
+### Encrypted Backups
+
+```javascript
+const backupData = await gun.get('mydata').then();
+const password = prompt('Enter backup password:');
+const encrypted = await SEA.encrypt(backupData, password);
+
+// Save encrypted backup
+downloadFile('backup.enc', encrypted);
+```
+
+## Security Considerations
+
+### AES-GCM
+
+SEA uses AES-GCM (Galois/Counter Mode):
+
+- **Key Size**: 256 bits
+- **IV Size**: 15 bytes (120 bits)
+- **Authentication**: Built-in authentication tag
+- **Security**: Authenticated encryption (confidentiality + integrity)
+
+### Key Derivation
+
+Keys are derived using SHA-256 hash:
+
+```javascript
+const derivedKey = SHA256(key + salt)
+```
+
+Reference: `~/workspace/source/sea/aeskey.js` (imported in encrypt.js)
+
+### Random Values
+
+- **Salt**: 9 bytes of cryptographically secure random data
+- **IV**: 15 bytes of cryptographically secure random data
+- **Source**: `crypto.getRandomValues()` (browser) or `crypto.randomBytes()` (Node.js)
+
+### IV Uniqueness
+
+<Warning>
+  Never reuse an IV with the same key. SEA generates a fresh random IV for every encryption operation, ensuring uniqueness.
+</Warning>
+
+### Password Strength
+
+When using passwords as keys:
+
+- Use strong, unique passwords
+- Consider using `SEA.work()` for password-based encryption (adds PBKDF2)
+- Minimum 12+ characters recommended
+- Mix uppercase, lowercase, numbers, symbols
+
+## Error Handling
+
+```javascript
+try {
+  const encrypted = await SEA.encrypt(data, key);
+} catch (err) {
+  console.error('Encryption failed:', err);
+  // Common errors:
+  // "`undefined` not allowed."
+  // "No encryption key."
+  // Web Crypto API errors
+}
+```
+
+### With Callbacks
+
+```javascript
+SEA.encrypt(data, key, (result) => {
+  if (!result) {
+    console.error('Encryption failed');
+    return;
+  }
+  console.log('Encrypted:', result);
+});
+```
+
+## Performance
+
+- **Speed**: Very fast (hardware-accelerated AES-GCM)
+- **Size Overhead**: ~30-40 bytes (IV + salt + JSON structure)
+- **Async**: Always asynchronous (uses Web Crypto API)
+
+```javascript
+const start = Date.now();
+const encrypted = await SEA.encrypt(largeData, key);
+console.log('Encrypted in', Date.now() - start, 'ms');
+```
+
+## Common Patterns
+
+### Encrypt Before Storing
+
+```javascript
+const savePrivate = async (path, data, password) => {
+  const encrypted = await SEA.encrypt(data, password);
+  gun.get(path).put(encrypted);
+};
+
+await savePrivate('secrets', { api_key: 'xyz' }, 'password');
+```
+
+### Conditional Encryption
+
+```javascript
+const saveData = async (data, encrypt = false) => {
+  if (encrypt && user.is) {
+    data = await SEA.encrypt(data, user._.sea);
+  }
+  gun.get('data').put(data);
+};
+```
+
+### Batch Encryption
+
+```javascript
+const items = ['secret1', 'secret2', 'secret3'];
+const encrypted = await Promise.all(
+  items.map(item => SEA.encrypt(item, key))
+);
+```
+
+## Integration with GUN
+
+```javascript
+// Automatically encrypt user data
+gun.user().auth(pair, async (ack) => {
+  const privateData = { ssn: '123-45-6789' };
+  const encrypted = await SEA.encrypt(privateData, pair);
+  
+  gun.user().get('private').put(encrypted);
+});
+
+// Later, decrypt when reading
+gun.user().get('private').once(async (encrypted) => {
+  const decrypted = await SEA.decrypt(encrypted, user._.sea);
+  console.log('Private data:', decrypted);
+});
+```

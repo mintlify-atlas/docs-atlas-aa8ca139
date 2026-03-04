@@ -1,0 +1,547 @@
+---
+title: Installation
+description: Install GUN for your platform - Browser, Node.js, npm, React Native, Electron, and more
+---
+
+GUN is flexible and can be installed and used across multiple platforms and environments. Choose the installation method that best fits your project.
+
+## Browser via CDN
+
+The quickest way to get started is to include GUN directly from a CDN:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+<script>
+  // GUN is now available globally
+  const gun = GUN();
+</script>
+```
+
+<Info>
+The CDN version is approximately 9KB gzipped and includes everything you need to get started.
+</Info>
+
+### Include SEA for user authentication
+
+If you need user authentication and encryption, also include SEA:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gun/sea.js"></script>
+<script>
+  const gun = GUN();
+  const user = gun.user();
+</script>
+```
+
+### Include AXE for mesh networking
+
+For advanced peer-to-peer mesh networking:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gun/axe.js"></script>
+```
+
+## npm installation
+
+For Node.js projects or modern build tools (Webpack, Vite, etc.), install via npm:
+
+```bash
+npm install gun
+```
+
+<Note>
+If the npm command doesn't work, you may need to create the `node_modules` directory first:
+```bash
+mkdir node_modules
+```
+Or use `sudo npm install gun` depending on your system permissions.
+</Note>
+
+### Basic usage in Node.js
+
+```javascript
+const GUN = require('gun');
+const gun = GUN();
+
+// Your GUN code here
+gun.get('test').put({ hello: 'world' });
+```
+
+### ES Module imports
+
+```javascript
+import GUN from 'gun';
+const gun = GUN();
+```
+
+### Using with SEA in Node.js
+
+For cryptographic features, you need to install the WebCrypto shim:
+
+```bash
+npm install gun @peculiar/webcrypto --save
+```
+
+Then require both:
+
+```javascript
+const GUN = require('gun/gun');
+const SEA = require('gun/sea');
+
+const gun = GUN();
+const user = gun.user();
+```
+
+<Warning>
+The `@peculiar/webcrypto` package is only needed for Node.js and React Native. Browsers have native WebCrypto support.
+</Warning>
+
+## Node.js server setup
+
+To create a GUN relay peer server:
+
+### Simple HTTP server
+
+```javascript
+const GUN = require('gun');
+const http = require('http');
+
+const server = http.createServer(GUN.serve(__dirname));
+const gun = GUN({ web: server });
+
+server.listen(8765);
+console.log('Relay peer started on port 8765 with /gun');
+```
+
+### Server with options
+
+```javascript
+const GUN = require('gun');
+const http = require('http');
+
+const port = process.env.PORT || 8765;
+const peers = process.env.PEERS ? process.env.PEERS.split(',') : [];
+
+const server = http.createServer(GUN.serve(__dirname));
+const gun = GUN({ 
+  web: server,
+  peers: peers 
+});
+
+server.listen(port);
+console.log(`Relay peer started on port ${port} with /gun`);
+```
+
+### HTTPS server
+
+```javascript
+const GUN = require('gun');
+const https = require('https');
+const http = require('http');
+const fs = require('fs');
+
+const options = {
+  key: fs.readFileSync('key.pem'),
+  cert: fs.readFileSync('cert.pem')
+};
+
+const server = https.createServer(options, GUN.serve(__dirname));
+const gun = GUN({ web: server });
+
+// Redirect HTTP to HTTPS
+http.createServer(function(req, res){
+  res.writeHead(301, {"Location": "https://" + req.headers['host'] + req.url });
+  res.end();
+}).listen(80);
+
+server.listen(443);
+console.log('Secure relay peer started on port 443');
+```
+
+<Tip>
+You can set environment variables for SSL certificates:
+```bash
+export HTTPS_CERT=~/cert.pem
+export HTTPS_KEY=~/key.pem
+export PORT=443
+```
+</Tip>
+
+## React integration
+
+For React applications, install GUN and require it specifically:
+
+```bash
+npm install gun
+```
+
+```javascript
+import React, { useState, useEffect } from 'react';
+const GUN = require('gun/gun');
+
+function App() {
+  const [gun] = useState(GUN());
+  const [data, setData] = useState({});
+  
+  useEffect(() => {
+    gun.get('mydata').on(setData);
+  }, []);
+  
+  return (
+    <div>
+      <h1>Data: {JSON.stringify(data)}</h1>
+    </div>
+  );
+}
+```
+
+<Note>
+For React, use `require('gun/gun')` instead of `require('gun')` to avoid webpack issues.
+</Note>
+
+## React Native installation
+
+GUN works with React Native but requires additional setup for crypto support.
+
+<Steps>
+  <Step title="Install dependencies">
+    ```bash
+    npm install gun @peculiar/webcrypto --save
+    ```
+  </Step>
+
+  <Step title="Set up crypto shim">
+    Create a shim file or import the webcrypto polyfill before using SEA:
+    
+    ```javascript
+    import { Crypto } from '@peculiar/webcrypto';
+    global.crypto = new Crypto();
+    
+    const GUN = require('gun/gun');
+    const SEA = require('gun/sea');
+    ```
+  </Step>
+
+  <Step title="Use GUN in your components">
+    ```javascript
+    const gun = GUN();
+    const user = gun.user();
+    ```
+  </Step>
+</Steps>
+
+<Info>
+For detailed React Native setup instructions, see the [official React Native docs](https://gun.eco/docs/React-Native).
+</Info>
+
+## Electron installation
+
+GUN works seamlessly with Electron applications:
+
+```bash
+npm install gun
+```
+
+In your Electron renderer process:
+
+```javascript
+const GUN = require('gun');
+const gun = GUN();
+```
+
+For examples, check out the [Electron test repository](https://github.com/PenguinMan98/electrontest).
+
+## Framework integrations
+
+GUN has community-maintained integrations for popular frameworks:
+
+### Vue.js
+
+```bash
+npm install gun vue-gun
+```
+
+See [vue-gun](https://github.com/sjones6/vue-gun) for integration details.
+
+### Svelte
+
+Check out the [Svelte documentation](https://gun.eco/docs/Svelte) for integration guides.
+
+### Angular
+
+Install GUN and create a service:
+
+```typescript
+import { Injectable } from '@angular/core';
+const GUN = require('gun/gun');
+
+@Injectable({
+  providedIn: 'root'
+})
+export class GunService {
+  public gun;
+  
+  constructor() {
+    this.gun = GUN();
+  }
+}
+```
+
+See the [Angular example](https://github.com/amark/gun/tree/master/examples/angular) for a complete setup.
+
+## Configuration options
+
+When initializing GUN, you can pass various configuration options:
+
+```javascript
+const gun = GUN({
+  // Connect to relay peers
+  peers: ['https://peer1.com/gun', 'https://peer2.com/gun'],
+  
+  // Use localStorage (browser only)
+  localStorage: true,
+  
+  // Use sessionStorage (browser only)
+  sessionStorage: true,
+  
+  // Use IndexedDB (browser only)
+  radisk: true,
+  
+  // Attach to existing HTTP server (Node.js only)
+  web: server,
+  
+  // Set file storage path (Node.js only)
+  file: 'data.json',
+  
+  // Use Amazon S3 for storage
+  s3: {
+    key: 'YOUR_ACCESS_KEY',
+    secret: 'YOUR_SECRET_KEY',
+    bucket: 'YOUR_BUCKET'
+  }
+});
+```
+
+<Info>
+By default, GUN uses localStorage in browsers and file storage in Node.js. You can customize storage adapters as needed.
+</Info>
+
+## Deploy a relay peer
+
+GUN includes several deployment options for relay peers:
+
+### Heroku
+
+[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/amark/gun)
+
+Or manually:
+
+```bash
+git clone https://github.com/amark/gun.git
+cd gun
+heroku create
+git push -f heroku HEAD:master
+```
+
+<Warning>
+Heroku's free tier deletes data every 15 minutes. Consider adding [persistent storage with Amazon S3](https://gun.eco/docs/Using-Amazon-S3-for-Storage).
+</Warning>
+
+### Docker
+
+Pull from Docker Hub:
+
+```bash
+docker run -p 8765:8765 gundb/gun
+```
+
+Or build locally:
+
+```bash
+git clone https://github.com/amark/gun.git
+cd gun
+docker build -t myrepo/gundb:v1 .
+docker run -p 8765:8765 myrepo/gundb:v1
+```
+
+Then visit http://localhost:8765 in your browser.
+
+<Note>
+The Docker image is community-contributed and may have different version numbers. Check the tags to ensure you're using the latest version.
+</Note>
+
+### Linux server
+
+SSH into your server and run the installation script:
+
+```bash
+curl -o- https://raw.githubusercontent.com/amark/gun/master/examples/install.sh | bash
+```
+
+<Warning>
+Always review installation scripts before running them. You can view [install.sh](https://github.com/amark/gun/blob/master/examples/install.sh) on GitHub first.
+</Warning>
+
+Set environment variables as needed:
+
+```bash
+export HTTPS_CERT=~/cert.pem
+export HTTPS_KEY=~/key.pem
+export PORT=443
+```
+
+You can safely press `CTRL+A+D` to detach without stopping the peer. To stop everything: `killall screen` or `killall node`.
+
+### Dome
+
+Deploy with one click using Dome:
+
+[![Deploy to Dome](https://trydome.io/button.svg)](https://app.trydome.io/signup?package=gun)
+
+### Zeet
+
+Deploy using Zeet:
+
+[![Deploy to Zeet](https://deploy.zeet.co/gun.svg)](https://deploy.zeet.co/?url=https://github.com/amark/gun)
+
+## Production deployment notes
+
+For production deployments, consider the following:
+
+<Steps>
+  <Step title="Use a process manager">
+    Use `pm2` or similar to keep your relay peer running after server reboots:
+    
+    ```bash
+    npm install -g pm2
+    pm2 start server.js
+    pm2 startup
+    pm2 save
+    ```
+  </Step>
+
+  <Step title="Configure reverse proxy">
+    Use nginx or another reverse proxy for SSL termination and load balancing. See the [nginx configuration example](https://gun.eco/docs/nginx).
+  </Step>
+
+  <Step title="Set environment variables">
+    Configure your deployment with appropriate environment variables:
+    - `PORT` - Server port
+    - `PEERS` - Comma-separated list of peer URLs
+    - `HTTPS_KEY` and `HTTPS_CERT` - SSL certificate paths
+  </Step>
+
+  <Step title="Disable CI warnings">
+    If deploying a web app using GUN on a cloud provider, set `CI=false` in your `.env` to prevent GUN warnings from being treated as build errors.
+  </Step>
+</Steps>
+
+<Warning>
+When deploying, the default examples CDN-ify all GUN files and modules. Moving forward, AXE may automatically cluster your peer into a shared DHT. You may want to disable this to run an isolated network.
+</Warning>
+
+## Testing your installation
+
+After installing GUN, verify it works:
+
+```javascript
+const GUN = require('gun');
+const gun = GUN();
+
+gun.get('test').put({ message: 'Hello GUN!' });
+
+gun.get('test').once((data) => {
+  console.log('Installation successful!', data);
+});
+```
+
+<Info>
+To run the test suite: `npm install -g mocha` then `npm test` in the GUN directory. Note that tests trigger persistent writes, so you'll need to clear the database (`rm -rf *data*`) before running tests again.
+</Info>
+
+## Troubleshooting
+
+### Module not found errors
+
+If you see module errors with React or Webpack:
+
+```javascript
+// Use this instead
+const GUN = require('gun/gun');
+```
+
+### SEA/Crypto errors in Node.js
+
+Install the WebCrypto polyfill:
+
+```bash
+npm install @peculiar/webcrypto --save
+```
+
+### Build errors in cloud deployments
+
+Add to your `.env` file:
+
+```
+CI=false
+```
+
+Or modify your webpack config to exclude GUN dependencies from builds.
+
+### Port already in use
+
+Change the port in your configuration:
+
+```javascript
+const port = process.env.PORT || 8765;
+server.listen(port);
+```
+
+## Package information
+
+<CardGroup cols={2}>
+  <Card title="Version" icon="tag">
+    0.2020.1239
+  </Card>
+  
+  <Card title="Bundle size" icon="box">
+    ~9KB gzipped
+  </Card>
+  
+  <Card title="Node.js support" icon="node">
+    >= 0.8.4
+  </Card>
+  
+  <Card title="License" icon="scale-balanced">
+    Zlib / MIT / Apache 2.0
+  </Card>
+</CardGroup>
+
+## Dependencies
+
+- **Required**: `ws` (WebSocket support for Node.js)
+- **Optional**: `@peculiar/webcrypto` (for SEA in Node.js/React Native)
+
+## Next steps
+
+Now that GUN is installed:
+
+<CardGroup cols={2}>
+  <Card title="Quickstart guide" icon="rocket" href="/quickstart">
+    Build your first GUN application
+  </Card>
+  
+  <Card title="API reference" icon="book" href="https://gun.eco/docs/API">
+    Explore the complete API documentation
+  </Card>
+  
+  <Card title="Examples" icon="code" href="https://github.com/amark/gun/tree/master/examples">
+    Browse real-world example applications
+  </Card>
+  
+  <Card title="Community" icon="users" href="http://chat.gun.eco">
+    Join the GUN community chat
+  </Card>
+</CardGroup>

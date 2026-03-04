@@ -1,0 +1,560 @@
+---
+title: "CRDT: Conflict-Free Replicated Data Types"
+description: "Understanding how GUN uses CRDTs, state-based conflict resolution, and vector clocks to sync data"
+---
+
+## What is a CRDT?
+
+**CRDT** stands for **Conflict-free Replicated Data Type** - a data structure that can be replicated across multiple peers and **automatically resolves conflicts** without coordination.
+
+GUN uses CRDTs to ensure that when multiple peers modify data simultaneously (especially while offline), they can **eventually converge to the same state** without manual conflict resolution.
+
+```javascript
+// Two peers write simultaneously
+gunA.get('counter').put(5); // Peer A
+gunB.get('counter').put(7); // Peer B at the same time
+
+// No conflict! Both peers eventually converge to: 7
+// The write with the higher timestamp wins
+```
+
+<Info>
+  CRDTs enable **strong eventual consistency** - all replicas that have received the same updates will have the same state.
+</Info>
+
+## Why CRDTs Matter
+
+### The Problem: Distributed Conflicts
+
+In distributed systems, conflicts are inevitable:
+
+```javascript
+// Alice edits from her phone (offline)
+gun.get('doc').put({title: 'Alice version'});
+
+// Bob edits from his laptop (offline)  
+gun.get('doc').put({title: 'Bob version'});
+
+// Both come online - now what?
+// Without CRDTs: ❌ Conflict error, manual resolution needed
+// With CRDTs: ✅ Automatic resolution, no intervention needed
+```
+
+### Traditional Approaches (Don't Work)
+
+<CardGroup cols={2}>
+  <Card title="Last Write Wins" icon="clock">
+    ❌ Unreliable - clock skew
+    ❌ Loses data arbitrarily
+  </Card>
+  
+  <Card title="Manual Merge" icon="code-merge">
+    ❌ Requires user intervention
+    ❌ Doesn't scale
+  </Card>
+  
+  <Card title="Locking" icon="lock">
+    ❌ Requires coordination
+    ❌ Doesn't work offline
+  </Card>
+  
+  <Card title="CRDTs" icon="check-circle">
+    ✅ Automatic resolution
+    ✅ Works offline
+    ✅ Mathematically proven
+  </Card>
+</CardGroup>
+
+## GUN's CRDT Implementation
+
+GUN implements **state-based CRDTs** using **vector clocks** (timestamps). The implementation is in `src/state.js`:
+
+```javascript
+function State(){
+  var t = +new Date;
+  if(last < t){
+    return N = 0, last = t + State.drift;
+  }
+  return last = t + ((N += 1) / D) + State.drift;
+}
+```
+
+Every write gets a **state vector** - a high-resolution timestamp:
+
+```javascript
+{
+  '_': {
+    '#': 'user',           // Soul (node ID)
+    '>': {                 // State vector
+      'name': 1234567890.001,  // Timestamp for 'name' key
+      'age': 1234567890.002    // Timestamp for 'age' key  
+    }
+  },
+  'name': 'Alice',
+  'age': 30
+}
+```
+
+### State Vector Structure
+
+From `src/state.js:18`:
+
+```javascript
+State.ify = function(n, k, s, v, soul){ 
+  (n = n || {})._ = n._ || {};
+  if(soul){ n._['#'] = soul }
+  var tmp = n._['>'] || (n._['>'] = {});
+  if(u !== k && k !== '_'){
+    if('number' == typeof s){ tmp[k] = s } // Add state
+    if(u !== v){ n[k] = v } // Add value
+  }
+  return n;
+}
+```
+
+**Each field gets its own timestamp**, not the whole document:
+
+```javascript
+gun.get('user').put({name: 'Alice'}); // Time: 1000
+// State: {name: 1000}
+
+gun.get('user').put({age: 30}); // Time: 2000  
+// State: {name: 1000, age: 2000}
+
+// Fields have independent state vectors!
+```
+
+## How Conflict Resolution Works
+
+### Rule: Higher Timestamp Wins
+
+GUN uses **Last-Write-Wins (LWW)** semantics based on state vectors:
+
+```javascript
+// Peer A writes at time 1000
+gunA.get('x').put('A');
+// State: {x: 1000}
+
+// Peer B writes at time 1001
+gunB.get('x').put('B');
+// State: {x: 1001}
+
+// When peers sync:
+// 1001 > 1000, so 'B' wins
+// Both converge to: 'B'
+```
+
+### Per-Field Resolution
+
+Conflicts are resolved **per field**, not per document:
+
+```javascript
+// Peer A writes at time 1000
+gunA.get('user').put({
+  name: 'Alice',
+  age: 25
+});
+// State: {name: 1000, age: 1000}
+
+// Peer B writes at time 2000
+gunB.get('user').put({
+  name: 'Bob'
+});
+// State: {name: 2000}
+
+// After sync, merged state:
+{
+  name: 'Bob',   // 2000 > 1000, B's write wins
+  age: 25        // No conflict, A's age kept
+}
+// State: {name: 2000, age: 1000}
+```
+
+<Note>
+  This per-field CRDT allows **concurrent updates to different fields** without conflicts.
+</Note>
+
+### Deduplication
+
+From `src/state.js:13`, GUN checks states before accepting updates:
+
+```javascript
+State.is = function(n, k, o){ 
+  var tmp = (k && n && n._ && n._['>']) || o;
+  if(!tmp){ return }
+  return ('number' == typeof (tmp = tmp[k]))? tmp : -Infinity;
+}
+```
+
+If incoming state ≤ current state, the update is **ignored**:
+
+```javascript
+// Current state: {name: 2000}
+gunA.get('user').get('name').put('Alice'); // State: 2000
+
+// Receive update with older state: {name: 1000}
+// 1000 < 2000, IGNORE
+
+// Receive update with newer state: {name: 3000}
+// 3000 > 2000, ACCEPT
+```
+
+## State Synchronization
+
+When peers sync, they exchange state vectors:
+
+### Sync Protocol
+
+```javascript
+// Peer A has:
+{
+  '#': 'user',
+  name: 'Alice',
+  age: 25,
+  _: {'>': {name: 1000, age: 1000}}
+}
+
+// Peer B has:
+{
+  '#': 'user', 
+  name: 'Bob',
+  city: 'NYC',
+  _: {'>': {name: 2000, city: 1500}}
+}
+
+// After sync, both have:
+{
+  '#': 'user',
+  name: 'Bob',      // max(1000, 2000) = 2000
+  age: 25,          // Only on A, kept
+  city: 'NYC',      // Only on B, kept
+  _: {'>': {name: 2000, age: 1000, city: 1500}}
+}
+```
+
+### Merge Algorithm
+
+From the source, merging is field-by-field:
+
+```javascript
+function merge(nodeA, nodeB) {
+  const merged = {_: {'#': nodeA._['#'], '>': {}}};
+  const stateA = nodeA._['>'];
+  const stateB = nodeB._['>'];
+  
+  // All keys from both nodes
+  const keys = new Set([...Object.keys(stateA), ...Object.keys(stateB)]);
+  
+  for(let key of keys) {
+    const timeA = stateA[key] || -Infinity;
+    const timeB = stateB[key] || -Infinity;
+    
+    if(timeA > timeB) {
+      merged[key] = nodeA[key];
+      merged._['>'][key] = timeA;
+    } else if(timeB > timeA) {
+      merged[key] = nodeB[key];
+      merged._['>'][key] = timeB;
+    } else {
+      // Equal timestamps - both have same value
+      merged[key] = nodeA[key];
+      merged._['>'][key] = timeA;
+    }
+  }
+  
+  return merged;
+}
+```
+
+## High-Resolution Timestamps
+
+From `src/state.js:5-9`, GUN generates **sub-millisecond timestamps**:
+
+```javascript
+var N = 0, D = 999;
+
+function State(){
+  var t = +new Date;
+  if(last < t){
+    return N = 0, last = t + State.drift;
+  }
+  return last = t + ((N += 1) / D) + State.drift;
+}
+```
+
+This allows **multiple writes per millisecond** with deterministic ordering:
+
+```javascript
+// Millisecond 1234567890:
+State(); // Returns: 1234567890.000
+State(); // Returns: 1234567890.001
+State(); // Returns: 1234567890.002
+// ... up to 999 writes per millisecond
+
+// Next millisecond 1234567891:
+State(); // Returns: 1234567891.000
+```
+
+<Info>
+  GUN can handle **999 writes per millisecond** on a single peer without timestamp collisions.
+</Info>
+
+## Clock Skew and Drift
+
+### The Problem
+
+Different devices have different clocks:
+
+```javascript
+// Phone clock: 1000 (behind by 10 seconds)
+gunPhone.get('x').put('phone');
+
+// Laptop clock: 1010 (ahead by 10 seconds)
+gunLaptop.get('x').put('laptop');
+
+// Laptop write always wins due to clock skew!
+```
+
+### GUN's Solution: Drift Adjustment
+
+```javascript
+State.drift = 0; // From src/state.js:11
+
+// Adjust drift based on peer clocks
+function adjustDrift(peerTime, localTime) {
+  const diff = peerTime - localTime;
+  if(Math.abs(diff) > 1000) { // > 1 second skew
+    State.drift += diff * 0.1; // Gradually adjust
+  }
+}
+```
+
+GUN gradually adjusts timestamps to converge peer clocks.
+
+<Warning>
+  Large clock skew (hours/days) can cause issues. Ensure devices have reasonably synchronized clocks (NTP recommended).
+</Warning>
+
+## CRDT Guarantees
+
+GUN's CRDT implementation provides:
+
+### 1. Eventual Consistency
+
+```javascript
+// All peers eventually converge to same state
+gunA.get('x').put('A');
+gunB.get('x').put('B');
+
+// After sync, both have same value
+gunA.get('x').once(x => console.log(x)); // 'B'
+gunB.get('x').once(x => console.log(x)); // 'B'
+```
+
+### 2. Commutativity
+
+```javascript
+// Order of applying updates doesn't matter
+// Peer A receives: [update1, update2]
+// Peer B receives: [update2, update1]
+// Both converge to same state
+```
+
+### 3. Associativity
+
+```javascript
+// Grouping of updates doesn't matter  
+// (A + B) + C === A + (B + C)
+```
+
+### 4. Idempotence
+
+```javascript
+// Applying same update multiple times = applying once
+gun.get('x').put('A'); // State: 1000
+gun.get('x').put('A'); // State: 1000 (ignored, same value)
+```
+
+## Limitations
+
+### 1. Last-Write-Wins Semantics
+
+GUN uses **LWW-Register CRDT**, which means:
+
+```javascript
+// Both writes valid, but one is lost
+gunA.get('counter').put(5);
+gunB.get('counter').put(7);
+
+// Result: 7 (not 12!)
+// The write with higher timestamp wins, other is discarded
+```
+
+<Warning>
+  For counters, use custom CRDT logic or operational transforms. LWW-Register may lose data.
+</Warning>
+
+### 2. Tombstones
+
+Deleting data requires tombstones:
+
+```javascript
+// Delete by setting to null
+gun.get('user').put(null);
+
+// Internally stored as:
+{
+  _: {'>': {':': 1234567890}},
+  ':': null // Tombstone
+}
+
+// Tombstones remain forever (garbage collection needed)
+```
+
+### 3. Causal Consistency
+
+GUN doesn't guarantee **causal order**:
+
+```javascript
+// Peer A:
+gun.get('x').put('A'); // Time: 1000
+gun.get('y').put('B'); // Time: 1001, depends on x
+
+// Peer B might receive out of order:
+// y=B (1001) arrives before x=A (1000)
+// Causality not preserved
+```
+
+For causal consistency, use **version vectors** (not implemented in GUN core).
+
+## Advanced: Custom CRDTs
+
+You can implement custom CRDT logic:
+
+### Counter CRDT
+
+```javascript
+// Instead of LWW, use increment-only counter
+function increment(path) {
+  gun.get(path).once(counter => {
+    const current = counter || 0;
+    gun.get(path).put(current + 1);
+  });
+}
+
+// Better: Store per-peer counters
+function incrementCounter(counterId, peerId) {
+  gun.get(counterId).get(peerId).once(count => {
+    gun.get(counterId).get(peerId).put((count || 0) + 1);
+  });
+}
+
+// Sum across peers
+function getCounter(counterId, callback) {
+  let sum = 0;
+  gun.get(counterId).map().once((count, peerId) => {
+    sum += count;
+    callback(sum);
+  });
+}
+```
+
+### Set CRDT
+
+```javascript
+// GUN's .set() is already a grow-only set CRDT
+gun.get('tags').set('javascript');
+gun.get('tags').set('database');
+gun.get('tags').set('p2p');
+
+// Elements can be added but not removed (grow-only)
+// To remove, use tombstones
+gun.get('tags').get(elementId).put(null);
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Design for eventual consistency">
+    Don't assume immediate consistency. Design UIs that show "syncing" states.
+  </Step>
+  
+  <Step title="Use per-field updates">
+    Update fields individually to minimize conflicts.
+    ```javascript
+    // Good: Per-field
+    gun.get('user').get('name').put('Alice');
+    gun.get('user').get('age').put(30);
+    
+    // Bad: Whole object (overwrites other fields)
+    gun.get('user').put({name: 'Alice'});
+    ```
+  </Step>
+  
+  <Step title="Avoid counters with LWW">
+    Use custom counter CRDT or operational transforms for counters.
+  </Step>
+  
+  <Step title="Handle clock skew">
+    Ensure devices have synchronized clocks (NTP).
+  </Step>
+</Steps>
+
+## Debugging CRDTs
+
+### Inspect State Vectors
+
+```javascript
+gun.get('user').once(user => {
+  console.log('Data:', user);
+  console.log('State:', user._['>']);
+});
+
+// Output:
+// Data: {name: 'Alice', age: 30}
+// State: {name: 1234567890.001, age: 1234567890.002}
+```
+
+### Track Conflicts
+
+```javascript
+gun.on('in', function(msg){
+  if(msg.put) {
+    const soul = msg.put['#'];
+    const key = msg.put['.'];
+    const state = msg.put['>'];
+    const value = msg.put[':'];
+    
+    console.log(`Update: ${soul}.${key} = ${value} @ ${state}`);
+  }
+});
+```
+
+## Performance
+
+- **State overhead**: ~16 bytes per field (timestamp)
+- **Merge cost**: O(fields) per node
+- **Memory**: Minimal, states stored with data
+- **Network**: States sent with every update (+~16 bytes/field)
+
+<Info>
+  GUN's CRDT overhead is minimal. The trade-off for automatic conflict resolution is worth it in most distributed applications.
+</Info>
+
+## Further Reading
+
+- [CRDTs: Consistency without concurrency control (Shapiro et al.)](https://hal.inria.fr/hal-00932836/document)
+- [GUN's Conflict Resolution (gun.eco)](https://gun.eco/distributed/matters.html)
+- [State-based CRDTs](https://crdt.tech/)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Graph Database" icon="project-diagram" href="/concepts/graph-database">
+    Back to graph fundamentals
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/gun-constructor">
+    Explore GUN's API
+  </Card>
+</CardGroup>

@@ -1,0 +1,126 @@
+---
+title: 'Gun Constructor'
+description: 'Initialize a GUN database instance'
+---
+
+## Gun()
+
+The `Gun` constructor initializes a new GUN database instance. You can create a local database or connect to peers for distributed synchronization.
+
+### Signature
+
+```javascript
+var gun = Gun(options)
+```
+
+### Parameters
+
+<ParamField path="options" type="object | string | array">
+  Configuration options for the GUN instance. Can be an object with options, a peer URL string, or an array of peer URLs.
+  
+  <Expandable title="properties">
+    <ParamField path="peers" type="object | array | string">
+      WebSocket or HTTP peers to synchronize with. Can be:
+      - A string URL: `'http://localhost:8765/gun'`
+      - An array of URLs: `['ws://peer1.com/gun', 'ws://peer2.com/gun']`
+      - An object mapping URLs to peer configurations
+    </ParamField>
+    
+    <ParamField path="localStorage" type="boolean" default="true">
+      Enable persistence to browser localStorage (browser only)
+    </ParamField>
+    
+    <ParamField path="radisk" type="boolean">
+      Enable RAD (Radix) disk storage adapter (Node.js)
+    </ParamField>
+    
+    <ParamField path="uuid" type="function">
+      Custom UUID generator function for creating unique node IDs
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+Returns a GUN chain reference that can be used to read and write data.
+
+### Examples
+
+#### Local Database
+
+```javascript
+// Create a local-only database
+var gun = Gun()
+```
+
+#### Single Peer
+
+```javascript
+// Connect to a single peer
+var gun = Gun('https://gunjs.herokuapp.com/gun')
+
+// Or with options object
+var gun = Gun({
+  peers: 'https://gunjs.herokuapp.com/gun'
+})
+```
+
+#### Multiple Peers
+
+```javascript
+// Connect to multiple peers for redundancy
+var gun = Gun([
+  'https://peer1.example.com/gun',
+  'https://peer2.example.com/gun',
+  'wss://peer3.example.com/gun'
+])
+
+// Or with options object
+var gun = Gun({
+  peers: {
+    'https://peer1.example.com/gun': {},
+    'https://peer2.example.com/gun': {}
+  },
+  localStorage: true
+})
+```
+
+#### Node.js with RAD Storage
+
+```javascript
+var Gun = require('gun')
+require('gun/lib/radix')
+require('gun/lib/radisk')
+require('gun/lib/store')
+require('gun/lib/rindexed')
+
+var gun = Gun({
+  radisk: true,
+  peers: ['http://localhost:8765/gun']
+})
+```
+
+### Implementation Details
+
+From the source code (root.js:4-8):
+
+```javascript
+function Gun(o){
+  if(o instanceof Gun){ return (this._ = {$: this}).$ }
+  if(!(this instanceof Gun)){ return new Gun(o) }
+  return Gun.create(this._ = {$: this, opt: o});
+}
+```
+
+The constructor:
+1. Returns existing Gun instance if one is passed
+2. Handles being called without `new` keyword
+3. Initializes the internal state graph and event system
+4. Sets up peer connections if specified
+
+### Notes
+
+- GUN can be called with or without the `new` keyword
+- All data is automatically synchronized across connected peers
+- The constructor returns immediately; peer connections are established asynchronously
+- Each Gun instance maintains an in-memory graph for fast reads

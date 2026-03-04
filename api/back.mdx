@@ -1,0 +1,277 @@
+---
+title: '.back()'
+description: 'Navigate up the chain'
+---
+
+## .back()
+
+The `.back()` method traverses up the chain to parent references. It's useful for navigating back after descending into nested properties or returning to the root database.
+
+### Signature
+
+```javascript
+gun.back()
+gun.back(n)
+gun.back(path)
+gun.back(callback)
+```
+
+### Parameters
+
+<ParamField path="n" type="number" optional>
+  Number of levels to go back. Special values:
+  - `1` (default): Go back one level
+  - `-1`: Go to root
+  - `Infinity`: Go to root
+  - `2`, `3`, etc.: Go back multiple levels
+</ParamField>
+
+<ParamField path="path" type="string | array" optional>
+  Property path to traverse. Can be:
+  - String with dots: `'opt.peers'`
+  - Array of keys: `['opt', 'peers']`
+  
+  Returns the value at that path in the chain metadata.
+</ParamField>
+
+<ParamField path="callback" type="function" optional>
+  Function called for each parent until it returns a value.
+  
+  **Signature:** `function(parent, opt)`
+  
+  - `parent` - Parent chain context
+  - `opt` - Options passed through
+  
+  **Return:** Stop traversing and return this value
+</ParamField>
+
+### Return Value
+
+Returns a GUN chain reference to the parent (or root) for method chaining.
+
+### Examples
+
+#### Go Back One Level
+
+```javascript
+// Navigate down then back up
+var user = gun.get('user/alice')
+  .get('profile')
+  .get('avatar')
+  .back()  // Now at 'profile'
+  .get('bio')
+
+// Equivalent to:
+var user = gun.get('user/alice').get('profile')
+user.get('avatar')  // Go down
+user.get('bio')     // Stay at profile level
+```
+
+#### Return to Root
+
+```javascript
+// Go all the way back to root
+var avatar = gun.get('user/alice')
+  .get('profile')
+  .get('avatar')
+
+avatar.back(-1)  // Returns root gun instance
+// or
+avatar.back(Infinity)  // Same thing
+
+// Now you can access anything from root
+avatar.back(-1).get('user/bob')
+```
+
+#### Multiple Levels
+
+```javascript
+// Go back 2 levels
+var gun = gun.get('a').get('b').get('c')
+  .back(2)  // Now at 'a'
+  .get('d')
+
+// Go back 3 levels
+gun.get('a').get('b').get('c').get('d')
+  .back(3)  // Now at 'a'
+```
+
+#### Access Metadata Path
+
+```javascript
+// Get value from chain metadata
+var gun = Gun({
+  peers: ['http://localhost:8765/gun'],
+  uuid: function(){ return 'custom-id' }
+})
+
+gun.get('user').get('alice')
+  .back('opt.peers')  // Returns: ['http://localhost:8765/gun']
+
+gun.get('data')
+  .back('opt.uuid')()  // Calls the uuid function
+
+// Array path syntax
+gun.get('user')
+  .back(['opt', 'peers'])  // Returns: ['http://localhost:8765/gun']
+```
+
+#### Traverse with Callback
+
+```javascript
+// Find first parent with a soul
+gun.get('user/alice').get('name').back(function(parent){
+  if(parent.soul){
+    return parent.soul  // Returns: 'user/alice'
+  }
+  // Return undefined to continue traversing
+})
+
+// Collect path
+var path = []
+gun.get('a').get('b').get('c').back(function(at){
+  if(at.get){
+    path.push(at.get)
+  }
+})
+console.log(path.reverse())  // ['a', 'b', 'c']
+```
+
+#### Build Path String
+
+```javascript
+// Helper to get full path
+function getPath(gun) {
+  var path = []
+  gun.back(function(at){
+    if(at.get) path.push(at.get)
+  })
+  return path.reverse().join('.')
+}
+
+var ref = gun.get('users').get('alice').get('profile').get('name')
+console.log(getPath(ref))  // 'users.alice.profile.name'
+```
+
+#### Navigation Pattern
+
+```javascript
+// Complex navigation
+var base = gun.get('app')
+var user = base.get('user').get('alice')
+var profile = user.get('profile')
+
+// From profile, go back to user
+profile.back().get('settings')
+
+// From profile, go to root and access something else
+profile.back(-1).get('app').get('config')
+
+// From anywhere, get root
+profile.back(Infinity)
+```
+
+### Implementation Details
+
+From the source code (back.js:4-39):
+
+```javascript
+Gun.chain.back = function(n, opt){ var tmp;
+  n = n || 1;
+  if(-1 === n || Infinity === n){
+    return this._.root.$;
+  } else
+  if(1 === n){
+    return (this._.back || this._).$;
+  }
+  var gun = this, at = gun._;
+  if(typeof n === 'string'){
+    n = n.split('.');
+  }
+  if(n instanceof Array){
+    var i = 0, l = n.length, tmp = at;
+    for(i; i < l; i++){
+      tmp = (tmp||empty)[n[i]];
+    }
+    if(u !== tmp){
+      return opt? gun : tmp;
+    } else
+    if((tmp = at.back)){
+      return tmp.$.back(n, opt);
+    }
+    return;
+  }
+  if('function' == typeof n){
+    var yes, tmp = {back: at};
+    while((tmp = tmp.back)
+    && u === (yes = n(tmp, opt))){}
+    return yes;
+  }
+  if('number' == typeof n){
+    return (at.back || at).$.back(n - 1);
+  }
+  return this;
+}
+```
+
+The `.back()` method:
+1. With no args or `1`: goes back one level
+2. With `-1` or `Infinity`: returns root
+3. With string/array: accesses chain metadata
+4. With callback: traverses until callback returns a value
+5. With number > 1: recursively goes back N levels
+
+### Chain Hierarchy
+
+```javascript
+// Understanding the chain structure
+var gun = Gun()              // Root: depth 0
+var users = gun.get('users') // Depth 1
+var alice = users.get('alice') // Depth 2  
+var name = alice.get('name') // Depth 3
+
+name.back()     // Returns alice (depth 2)
+name.back(2)    // Returns users (depth 1)
+name.back(3)    // Returns gun (depth 0)
+name.back(-1)   // Returns gun (root)
+```
+
+### Root Access Pattern
+
+```javascript
+// Common pattern: get root and navigate elsewhere
+function switchContext(gun, newPath) {
+  return gun.back(-1).get(newPath)
+}
+
+var currentUser = gun.get('user/alice')
+var settings = switchContext(currentUser, 'settings')
+```
+
+### Metadata Access
+
+```javascript
+// Access chain internals
+var chain = gun.get('user/alice')
+
+chain._.get        // 'alice'
+chain._.soul       // 'user/alice'
+chain._.back       // Parent chain context
+chain._.root       // Root context
+
+// Using .back() for metadata
+chain.back('root.opt.peers')  // Peer list
+chain.back('get')              // Current get key
+chain.back('soul')             // Current soul
+```
+
+### Notes
+
+- `.back()` with no args goes back one level
+- `.back(-1)` and `.back(Infinity)` return the root
+- Useful for complex navigation patterns
+- Returns immediately (synchronous)
+- The callback version traverses until it gets a return value
+- Path access is useful for getting configuration from the root
+- Each chain maintains a reference to its parent via `._back`
+- Cannot go "forward" - only up the chain

@@ -1,0 +1,220 @@
+---
+title: '.put()'
+description: 'Write data to the graph'
+---
+
+## .put()
+
+The `.put()` method writes data to the graph. It handles conflict resolution using GUN's CRDT algorithm and automatically syncs changes to connected peers.
+
+### Signature
+
+```javascript
+gun.put(data)
+gun.put(data, callback)
+gun.put(data, callback, options)
+```
+
+### Parameters
+
+<ParamField path="data" type="object | string | number | boolean | null | function">
+  The data to write. Can be:
+  - **Object**: Creates or updates a node with properties
+  - **Primitive**: Stores a scalar value (string, number, boolean, null)
+  - **Function**: Deferred write - function receives callback to pass data
+  - **Link**: Another GUN reference (creates a relationship)
+  
+  **Note:** Arrays are not directly supported. Use `.set()` for collections.
+</ParamField>
+
+<ParamField path="callback" type="function" optional>
+  Called after the write is acknowledged. Receives an acknowledgment object.
+  
+  **Signature:** `function(ack)`
+  
+  - `ack.err` - Error object if write failed
+  - `ack.ok` - Success confirmation
+  - `ack['@']` - Acknowledgment ID
+</ParamField>
+
+<ParamField path="options" type="object" optional>
+  Advanced options for write behavior
+  
+  <Expandable title="properties">
+    <ParamField path="soul" type="string">
+      Manually specify the node soul/ID
+    </ParamField>
+    
+    <ParamField path="opt" type="object">
+      Custom options passed to storage adapters
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+Returns the same GUN chain reference for method chaining.
+
+### Examples
+
+#### Write Object Data
+
+```javascript
+// Write a simple object
+gun.get('user/alice').put({
+  name: 'Alice',
+  age: 30,
+  city: 'Portland'
+})
+
+// Nested writes are automatically handled
+gun.get('alice').put({
+  profile: {
+    bio: 'Software developer',
+    avatar: 'https://example.com/avatar.jpg'
+  }
+})
+```
+
+#### Update Individual Properties
+
+```javascript
+// Update a single property
+gun.get('user/alice').get('name').put('Alice Smith')
+
+// Update multiple properties
+gun.get('user/alice').put({
+  name: 'Alice Smith',
+  updatedAt: Date.now()
+})
+```
+
+#### Write with Callback
+
+```javascript
+gun.get('user/alice').put({
+  name: 'Alice',
+  email: 'alice@example.com'
+}, function(ack){
+  if(ack.err){
+    console.error('Write failed:', ack.err)
+  } else {
+    console.log('Write successful!')
+  }
+})
+```
+
+#### Deferred Write with Function
+
+```javascript
+// Fetch data asynchronously before writing
+gun.get('weather').put(function(callback){
+  fetch('https://api.weather.com/current')
+    .then(res => res.json())
+    .then(data => callback({
+      temp: data.temperature,
+      conditions: data.conditions,
+      timestamp: Date.now()
+    }))
+})
+```
+
+#### Delete Properties
+
+```javascript
+// Set a property to null to delete it
+gun.get('user/alice').get('email').put(null)
+
+// Or in an object
+gun.get('user/alice').put({
+  email: null,  // Deletes the email property
+  phone: null   // Deletes the phone property
+})
+```
+
+#### Create Relationships
+
+```javascript
+// Link to another node
+var alice = gun.get('user/alice')
+var car = gun.get('car/toyota123')
+
+alice.get('car').put(car)
+
+// Later, traverse the relationship
+alice.get('car').once(function(carData){
+  console.log('Alice\'s car:', carData)
+})
+```
+
+### Implementation Details
+
+From the source code (put.js:4-78):
+
+```javascript
+Gun.chain.put = function(data, cb, as){
+  var gun = this, at = gun._, root = at.root;
+  as = as || {};
+  as.root = at.root;
+  as.run || (as.run = root.once);
+  stun(as, at.id); // set a flag for reads to check if this chain is writing
+  as.ack = as.ack || cb;
+  as.via = as.via || gun;
+  as.data = as.data || data;
+  as.soul || (as.soul = at.soul || ('string' == typeof cb && cb));
+  var s = as.state = as.state || Gun.state();
+  // ... graph walking and state resolution
+}
+```
+
+The `.put()` method:
+1. Validates the data structure
+2. Walks the graph to find nested objects
+3. Assigns state timestamps for conflict resolution
+4. Handles circular references
+5. Emits updates to connected peers
+6. "Stuns" reads during writes to prevent race conditions
+
+### Conflict Resolution
+
+GUN uses state-based CRDTs for automatic conflict resolution:
+
+```javascript
+// Both peers write simultaneously
+// Peer 1:
+gun.get('doc').put({ text: 'Hello' })
+
+// Peer 2:
+gun.get('doc').put({ text: 'World' })
+
+// GUN automatically resolves: the write with the
+// higher timestamp wins (last-write-wins)
+```
+
+### Valid Data Types
+
+From valid.js, GUN supports:
+- `null` (for deletes)
+- `string`
+- `number` (except ±Infinity)
+- `boolean`
+- Objects (nested graphs)
+- Soul references: `{ '#': 'node-id' }`
+
+### Invalid Data
+
+```javascript
+// These will cause errors:
+gun.get('data').put(undefined)        // Invalid
+gun.get('data').put([1, 2, 3])       // Use .set() instead
+gun.get('data').put(Infinity)        // Invalid number
+gun.get('data').put(new Date())      // Use Date.now() instead
+```
+
+### Notes
+
+- Writes are asynchronous and eventually consistent
+- Data is automatically synchronized to all connected peers
+- Partial updates merge with existing data (they don't replace it)
+- Circular references are automatically detected and handled
+- State timestamps are automatically generated using Gun.state()

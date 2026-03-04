@@ -1,0 +1,455 @@
+---
+title: 'SEA.certify()'
+description: 'Create certificates to grant permissions to other users'
+---
+
+# SEA.certify()
+
+Create cryptographic certificates that grant specific permissions to other users. Certificates allow delegated access control in distributed systems.
+
+<Warning>
+  `SEA.certify()` is an early experimental feature. The API may change in future versions. Use with caution in production.
+</Warning>
+
+## Syntax
+
+```javascript
+const cert = await SEA.certify(certificants, policy, authority)
+SEA.certify(certificants, policy, authority, callback)
+SEA.certify(certificants, policy, authority, callback, options)
+```
+
+## Parameters
+
+- **certificants** (string|array|object): Who receives permissions
+  - String: Single public key
+  - Array: Multiple public keys or user objects
+  - Object with `pub` property: Single user
+  - `'*'`: Grant to everyone (wildcard)
+
+- **policy** (string|object|array): What permissions to grant
+  - String: Path/property name (e.g., `'inbox'`)
+  - Object: Read/write policies `{ read: ..., write: ... }`
+  - Array: Multiple paths
+  - RAD/LEX pattern matching object
+
+- **authority** (object): Certificate authority's key pair
+  - Must have `pub` and `priv` properties
+  - Signs the certificate
+
+- **callback** (function, optional): Called with certificate
+
+- **options** (object, optional):
+  - `expiry`: Timestamp when certificate expires
+  - `block`: Blacklist/blocklist for denying access
+  - `raw`: Return raw object (default: false)
+
+## Returns
+
+A Promise that resolves to a signed certificate:
+
+```javascript
+"SEA{\"m\":{\"c\":\"certificant_pub\",\"w\":\"policy\"},\"s\":\"signature\"}"
+```
+
+## Basic Usage
+
+### Grant Write Permission
+
+```javascript
+const alice = await SEA.pair();
+const bob = await SEA.pair();
+
+// Alice grants Bob permission to write to her 'inbox'
+const cert = await SEA.certify(
+  bob.pub,           // Bob gets permission
+  'inbox',           // To write to 'inbox' path
+  alice              // Alice grants it
+);
+
+// Bob can now write to Alice's inbox using this certificate
+```
+
+### Grant to Multiple Users
+
+```javascript
+const cert = await SEA.certify(
+  [bob.pub, charlie.pub, david.pub],
+  'comments',
+  alice
+);
+```
+
+### Grant to Everyone (Wildcard)
+
+```javascript
+const publicCert = await SEA.certify(
+  '*',              // Anyone can write
+  'guestbook',
+  alice
+);
+```
+
+## Certificate Structure
+
+Reference: `~/workspace/source/sea/certify.js:50-63`
+
+```javascript
+{
+  c: 'certificant_pub',     // Who is granted permission
+  w: 'policy',              // Write policy
+  r: 'policy',              // Read policy (optional)
+  e: 1234567890,            // Expiry timestamp (optional)
+  rb: 'blocked_reader',     // Read blocklist (optional)
+  wb: 'blocked_writer'      // Write blocklist (optional)
+}
+```
+
+### Reserved Keys
+
+- **c**: Certificants (who gets the permission)
+- **w**: Write policy (what they can write)
+- **r**: Read policy (what they can read)
+- **e**: Expiry (when certificate becomes invalid)
+- **rb**: Read block (who is explicitly denied read)
+- **wb**: Write block (who is explicitly denied write)
+
+## Policy Types
+
+### Simple String Policy
+
+```javascript
+// Allow writing to specific property
+const cert = await SEA.certify(bob.pub, 'messages', alice);
+```
+
+### Read/Write Policies
+
+```javascript
+const cert = await SEA.certify(
+  bob.pub,
+  {
+    read: 'profile',
+    write: 'status'
+  },
+  alice
+);
+```
+
+### Array of Paths
+
+```javascript
+const cert = await SEA.certify(
+  bob.pub,
+  ['inbox', 'comments', 'messages'],
+  alice
+);
+```
+
+### RAD/LEX Pattern Matching
+
+Use Gun's RAD (Reference, Atomic, and Delta) and LEX (Lexical) patterns:
+
+```javascript
+const cert = await SEA.certify(
+  bob.pub,
+  {
+    '*': 'posts',           // Match all under 'posts'
+    '#': 'friends',         // Match by reference
+    '.': 'field'            // Match specific field
+  },
+  alice
+);
+```
+
+### Dynamic Certificant Matching
+
+Force key to equal certificant's public key:
+
+```javascript
+const cert = await SEA.certify(
+  bob.pub,
+  { '?': 'posts/*' },    // '?' forces match to bob.pub
+  alice
+);
+// Bob can only write to `posts/[bob.pub]`, not `posts/[charlie.pub]`
+```
+
+## Expiry
+
+Set when a certificate becomes invalid:
+
+```javascript
+const oneHour = Date.now() + (60 * 60 * 1000);
+
+const cert = await SEA.certify(
+  bob.pub,
+  'temp-access',
+  alice,
+  null,
+  { expiry: oneHour }
+);
+
+// Certificate expires after one hour
+```
+
+## Blocklists
+
+Explicitly deny access to specific users:
+
+```javascript
+const cert = await SEA.certify(
+  '*',  // Allow everyone
+  { write: 'comments' },
+  alice,
+  null,
+  {
+    block: {
+      write: spam_bot.pub  // Except this user
+    }
+  }
+);
+```
+
+### Read and Write Blocks
+
+```javascript
+const cert = await SEA.certify(
+  '*',
+  {
+    read: 'announcements',
+    write: 'feedback'
+  },
+  alice,
+  null,
+  {
+    block: {
+      read: banned_user.pub,
+      write: [spammer1.pub, spammer2.pub]
+    }
+  }
+);
+```
+
+## Use Cases
+
+### Collaborative Document Editing
+
+```javascript
+// Owner grants edit permissions to collaborators
+const docOwner = await SEA.pair();
+const editor1 = await SEA.pair();
+const editor2 = await SEA.pair();
+
+const editCert = await SEA.certify(
+  [editor1.pub, editor2.pub],
+  'document/content',
+  docOwner
+);
+
+// Store certificate
+gun.user(docOwner.pub)
+  .get('documents')
+  .get('doc123')
+  .get('certificates')
+  .set(editCert);
+```
+
+### Forum Moderation
+
+```javascript
+// Admin grants moderator permissions
+const adminCert = await SEA.certify(
+  moderator.pub,
+  ['delete', 'ban', 'pin'],
+  admin,
+  null,
+  { expiry: Date.now() + (30 * 24 * 60 * 60 * 1000) } // 30 days
+);
+```
+
+### Inbox Management
+
+```javascript
+// Alice allows friends to write to her inbox
+const inboxCert = await SEA.certify(
+  [bob.pub, charlie.pub],
+  'inbox',
+  alice
+);
+
+// Alice publishes the certificate
+gun.user(alice.pub).get('certificates').set(inboxCert);
+
+// Bob can now write to Alice's inbox
+gun.user(alice.pub).get('inbox').set({
+  from: bob.pub,
+  message: 'Hello Alice!'
+}, null, { cert: inboxCert });
+```
+
+### Time-limited Access
+
+```javascript
+// Grant 24-hour access to a file
+const tempAccess = await SEA.certify(
+  contractor.pub,
+  'files/project-x',
+  company,
+  null,
+  { expiry: Date.now() + (24 * 60 * 60 * 1000) }
+);
+```
+
+## Certificate Validation
+
+SEA and GUN automatically validate certificates when:
+
+1. **Signature**: Verifies authority signed the certificate
+2. **Expiry**: Checks if certificate is still valid
+3. **Policy**: Matches requested path against policy patterns
+4. **Blocklist**: Ensures user is not blocked
+
+## Security Considerations
+
+### Certificate Authority Trust
+
+<Warning>
+  Certificates are only as trustworthy as their authority. Anyone can create a certificate, but it only grants access to data controlled by that authority.
+</Warning>
+
+```javascript
+// Bob creates a cert claiming to be Alice - doesn't work!
+const fakeCert = await SEA.certify('*', 'inbox', bob);
+// This cert is signed by Bob, not Alice
+// Cannot grant access to Alice's data
+```
+
+### Certificate Storage
+
+Certificates should be stored in a discoverable location:
+
+```javascript
+// Store in authority's graph
+gun.user(authority.pub)
+  .get('certificates')
+  .get(certificant.pub)
+  .put(cert);
+
+// Or in a public certificates registry
+gun.get('certificates')
+  .get(authority.pub)
+  .get(certificant.pub)
+  .put(cert);
+```
+
+### Revocation
+
+To revoke a certificate:
+
+```javascript
+// Remove the certificate
+gun.user(authority.pub)
+  .get('certificates')
+  .get(certificant.pub)
+  .put(null);
+
+// Or use expiry and blocklist in new certificates
+```
+
+## Advanced Patterns
+
+### Delegation Chain
+
+```javascript
+// Alice delegates to Bob
+const cert1 = await SEA.certify(bob.pub, 'data', alice);
+
+// Bob sub-delegates to Charlie (if policy allows)
+const cert2 = await SEA.certify(charlie.pub, 'data/subset', bob);
+
+// Chain of certificates: Alice -> Bob -> Charlie
+```
+
+### Conditional Permissions
+
+```javascript
+const cert = await SEA.certify(
+  bob.pub,
+  {
+    write: {
+      '#': 'posts',          // Can write to posts
+      '.': 'status',         // Can update status
+      '>': Date.now()        // Only future timestamps
+    }
+  },
+  alice
+);
+```
+
+### Multi-level Access
+
+```javascript
+// Admin grants different levels
+const viewerCert = await SEA.certify(viewer.pub, { read: '*' }, admin);
+const editorCert = await SEA.certify(editor.pub, { read: '*', write: 'content' }, admin);
+const adminCert = await SEA.certify(newAdmin.pub, { read: '*', write: '*' }, admin);
+```
+
+## Integration with GUN
+
+### Using Certificates
+
+When writing data, pass the certificate:
+
+```javascript
+// Bob uses Alice's certificate to write to her inbox
+gun.user(alice.pub)
+  .get('inbox')
+  .set(message, null, { cert: aliceCert });
+```
+
+GUN automatically:
+1. Validates the certificate signature
+2. Checks expiry
+3. Matches the path against the policy
+4. Allows or denies the operation
+
+### Certificate Discovery
+
+Applications should implement certificate discovery:
+
+```javascript
+const getCertificate = async (authority, certificant, path) => {
+  return new Promise((resolve) => {
+    gun.user(authority)
+      .get('certificates')
+      .get(certificant)
+      .once(resolve);
+  });
+};
+
+const cert = await getCertificate(alice.pub, bob.pub, 'inbox');
+```
+
+## Troubleshooting
+
+### Certificate Not Working
+
+1. **Verify signature**: Ensure authority signed it
+2. **Check expiry**: Certificate may have expired
+3. **Match policy**: Path must match the policy pattern
+4. **Check blocklist**: User may be blocked
+5. **Authority control**: Authority must own the data
+
+### Common Errors
+
+```javascript
+// No certificant
+SEA.certify(null, 'path', authority);
+// Error: "No certificant found."
+
+// No policy
+SEA.certify(bob.pub, null, authority);
+// Error: "No policy found."
+```

@@ -1,0 +1,214 @@
+---
+title: '.on()'
+description: 'Subscribe to realtime updates'
+---
+
+## .on()
+
+The `.on()` method creates a realtime subscription that triggers a callback whenever data changes. Unlike `.once()`, it continues listening indefinitely until explicitly unsubscribed.
+
+### Signature
+
+```javascript
+gun.on(callback)
+gun.on(callback, options)
+```
+
+### Parameters
+
+<ParamField path="callback" type="function">
+  Function called whenever data changes at this node.
+  
+  **Signature:** `function(data, key, message, event)`
+  
+  - `data` - The updated data
+  - `key` - The property key that changed
+  - `message` - Full message object with metadata
+  - `event` - Event control object with `.off()` method
+</ParamField>
+
+<ParamField path="options" type="boolean | object" optional>
+  Subscription options
+  
+  - `true` - Shorthand for `{change: true}`, only fires on changes
+  - Object with properties:
+  
+  <Expandable title="properties">
+    <ParamField path="change" type="boolean">
+      Only trigger callback when data actually changes (not on initial load)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+Returns the same GUN chain reference for method chaining.
+
+### Examples
+
+#### Basic Subscription
+
+```javascript
+// Listen for changes
+gun.get('user/alice').on(function(data, key){
+  console.log('Alice updated:', data)
+})
+
+// Update triggers the callback
+gun.get('user/alice').put({ name: 'Alice Smith' })
+// Console: "Alice updated: { name: 'Alice Smith', ... }"
+```
+
+#### Subscribe to Nested Properties
+
+```javascript
+// Listen to a specific property
+gun.get('user/alice').get('name').on(function(name){
+  console.log('Name changed to:', name)
+})
+
+// Listen to nested objects
+gun.get('user/alice').get('settings').on(function(settings){
+  console.log('Settings updated:', settings)
+})
+```
+
+#### Change-Only Mode
+
+```javascript
+// Only fire on changes, skip initial value
+gun.get('counter').on(function(count){
+  console.log('Counter changed:', count)
+}, true)  // or { change: true }
+
+// First read won't trigger callback
+gun.get('counter').once(function(count){
+  console.log('Initial value:', count)  // This fires
+})
+```
+
+#### Unsubscribe with .off()
+
+```javascript
+// Store reference to unsubscribe later
+var ref = gun.get('messages').on(function(msg){
+  console.log('New message:', msg)
+})
+
+// Later, stop listening
+ref.off()
+
+// Or use the event parameter
+gun.get('messages').on(function(msg, key, message, event){
+  console.log('Message:', msg)
+  
+  // Unsubscribe after first message
+  event.off()
+})
+```
+
+#### Realtime Chat Example
+
+```javascript
+// Listen for new messages
+gun.get('chat/room1').get('messages').map().on(function(message){
+  displayMessage({
+    from: message.from,
+    text: message.text,
+    time: message.timestamp
+  })
+})
+
+// Send a message
+gun.get('chat/room1').get('messages').set({
+  from: 'alice',
+  text: 'Hello everyone!',
+  timestamp: Date.now()
+})
+```
+
+#### Form Sync Example
+
+```javascript
+// Two-way sync with form input
+var input = document.getElementById('username')
+
+// Listen for remote changes
+gun.get('user/alice').get('name').on(function(name){
+  if(input.value !== name){
+    input.value = name  // Update input from remote
+  }
+})
+
+// Send local changes
+input.addEventListener('input', function(){
+  gun.get('user/alice').get('name').put(input.value)
+})
+```
+
+### Implementation Details
+
+From the source code (on.js:4-52):
+
+```javascript
+Gun.chain.on = function(tag, arg, eas, as){
+  var gun = this, cat = gun._, root = cat.root, act, off, id, tmp;
+  if(typeof tag === 'string'){
+    if(!arg){ return cat.on(tag) }
+    act = cat.on(tag, arg, eas || cat, as);
+    if(eas && eas.$){
+      (eas.subs || (eas.subs = [])).push(act);
+    }
+    return gun;
+  }
+  var opt = arg;
+  (opt = (true === opt)? {change: true} : opt || {}).not = 1; opt.on = 1;
+  var wait = {};
+  gun.get(tag, opt);
+  return gun;
+}
+```
+
+The `.on()` method:
+1. Sets up a persistent event listener
+2. Subscribes to the internal event system
+3. Receives all updates (initial data + changes)
+4. Supports filtering with the `change` option
+5. Returns immediately; data arrives asynchronously
+
+### Differences from .once()
+
+| Feature | .on() | .once() |
+|---------|-------|----------|
+| **Triggers** | Every update | One time only |
+| **Unsubscribe** | Manual with `.off()` | Automatic |
+| **Use case** | Realtime sync | Read current value |
+| **Performance** | Stays in memory | Cleans up automatically |
+
+### Memory Management
+
+```javascript
+// ⚠️ Memory leak - listener never removed
+setInterval(function(){
+  gun.get('data').on(function(data){
+    console.log(data)
+  })
+}, 1000)
+
+// ✅ Good - clean up references
+var ref = gun.get('data').on(function(data){
+  console.log(data)
+})
+
+// Later:
+ref.off()  // Remove listener
+```
+
+### Notes
+
+- `.on()` fires immediately with cached data, then on every change
+- Use `.off()` to clean up subscriptions and prevent memory leaks
+- Callbacks receive data even if the value hasn't changed (unless `change: true`)
+- The callback is called with the gun chain as `this` context
+- Subscriptions survive reconnections and sync automatically
+- For one-time reads, use `.once()` instead

@@ -1,0 +1,156 @@
+---
+title: 'SEA Overview'
+description: 'Security, Encryption, and Authorization in GUN'
+---
+
+# SEA: Security, Encryption, and Authorization
+
+SEA is GUN's cryptographic security layer that provides end-to-end encryption, digital signatures, and user authentication. It implements a complete security suite built on Web Crypto API standards.
+
+<Warning>
+  **Mandatory Reading**: Before using SEA in production, read the [security documentation](https://gun.eco/explainers/data/security.html) to understand potential vulnerabilities and best practices.
+</Warning>
+
+## What is SEA?
+
+SEA (Security, Encryption, and Authorization) is a polyfill/shim approach to adding cryptographic capabilities to GUN. It provides:
+
+- **User Authentication**: Create and authenticate users with key pairs
+- **End-to-End Encryption**: AES-GCM encryption for private data
+- **Digital Signatures**: ECDSA signatures to verify data authenticity
+- **Certificates**: Grant permissions to other users
+- **Proof of Work**: PBKDF2-based password hardening
+
+## Core Features
+
+### Cryptographic Standards
+
+SEA uses industry-standard cryptographic algorithms:
+
+- **ECDSA** (P-256 curve): For signing and verifying data
+- **ECDH** (P-256 curve): For deriving shared secrets
+- **AES-GCM** (256-bit): For symmetric encryption
+- **PBKDF2** (SHA-256, 100,000 iterations): For key derivation
+- **SHA-256**: For hashing
+
+### Key Pair Structure
+
+SEA generates two types of key pairs for each user:
+
+```javascript
+{
+  pub: 'x.y',      // Public signing key (ECDSA)
+  priv: 'd',       // Private signing key (ECDSA)
+  epub: 'x.y',     // Public encryption key (ECDH)
+  epriv: 'd'       // Private encryption key (ECDH)
+}
+```
+
+## Quick Start
+
+```javascript
+const gun = Gun();
+const user = gun.user();
+
+// Create a new user
+user.create('alice', 'password123456', (ack) => {
+  if (ack.err) {
+    console.error(ack.err);
+  } else {
+    console.log('User created:', ack.pub);
+  }
+});
+
+// Authenticate
+user.auth('alice', 'password123456', (ack) => {
+  if (ack.err) {
+    console.error(ack.err);
+  } else {
+    console.log('Authenticated!');
+  }
+});
+```
+
+## HTTPS Requirement
+
+<Warning>
+  SEA requires HTTPS in browser environments. The Web Crypto API is only available over secure connections. SEA will automatically redirect to HTTPS if you're not on localhost.
+</Warning>
+
+Exceptions to HTTPS requirement:
+- `localhost`
+- `127.x.x.x` IP addresses
+- `file://` protocol
+- `blob:` protocol
+
+## API Methods
+
+SEA provides both user-level and utility methods:
+
+### User Methods
+
+- `user.create()` - Create a new user account
+- `user.auth()` - Authenticate a user
+- `user.leave()` - Log out the current user
+
+### Cryptographic Methods
+
+- `SEA.pair()` - Generate a new key pair
+- `SEA.sign()` - Sign data with a private key
+- `SEA.verify()` - Verify a signature
+- `SEA.encrypt()` - Encrypt data
+- `SEA.decrypt()` - Decrypt data
+- `SEA.certify()` - Create permission certificates
+- `SEA.work()` - Perform proof of work / hashing
+
+## Integration with GUN
+
+SEA integrates seamlessly with GUN's graph database:
+
+```javascript
+const gun = Gun();
+const user = gun.user().recall({ sessionStorage: true });
+
+// After authentication, all data is automatically signed
+user.get('profile').put({
+  name: 'Alice',
+  bio: 'Developer'
+});
+
+// Private encrypted data
+user.get('secrets').put({ api_key: 'xyz' }, null, { opt: true });
+```
+
+## Architecture
+
+SEA is implemented as a series of modules in `sea.js`:
+
+- **Buffer/Array handling**: Custom buffer implementation for encoding conversions
+- **Shim layer**: Polyfills for Web Crypto API in Node.js and browsers
+- **Settings**: Cryptographic algorithm configurations
+- **Core methods**: Pair, sign, verify, encrypt, decrypt, certify, work
+- **User system**: Authentication and session management
+
+## Security Considerations
+
+<Warning>
+  SEA is in active development. While it uses standard cryptographic primitives, always:
+  - Keep your private keys secure
+  - Use strong passwords (minimum 8 characters)
+  - Understand the trust model before production use
+  - Regular security audits are recommended
+</Warning>
+
+## Browser and Node.js Support
+
+SEA works in both environments:
+
+- **Browser**: Uses native Web Crypto API
+- **Node.js**: Uses `@peculiar/webcrypto` polyfill and Node's `crypto` module
+
+## Next Steps
+
+- Learn about [User Authentication](/sea/user)
+- Understand [Key Pair Generation](/sea/pair)
+- Explore [Encryption and Decryption](/sea/encrypt)
+- Implement [Digital Signatures](/sea/sign)

@@ -1,0 +1,286 @@
+---
+title: '.set()'
+description: 'Add items to a collection or list'
+---
+
+## .set()
+
+The `.set()` method adds items to an unordered collection. Unlike objects where keys are explicitly named, sets automatically generate unique IDs for each item, making them perfect for lists, feeds, and collections.
+
+### Signature
+
+```javascript
+gun.set(item)
+gun.set(item, callback)
+gun.set(item, callback, options)
+```
+
+### Parameters
+
+<ParamField path="item" type="any">
+  The item to add to the set. Can be:
+  - **Object**: Creates a new node and adds it
+  - **GUN reference**: Links an existing node
+  - **Primitive**: Wraps it in a node automatically
+  - **Node with soul**: Links by soul reference
+</ParamField>
+
+<ParamField path="callback" type="function" optional>
+  Called after the item is added
+  
+  **Signature:** `function(ack)`
+  
+  - `ack.err` - Error if the operation failed
+  - `ack.ok` - Success confirmation
+</ParamField>
+
+<ParamField path="options" type="object" optional>
+  Advanced options passed to the underlying `.put()` operation
+</ParamField>
+
+### Return Value
+
+Returns a GUN reference to the newly added item (not the set itself).
+
+### Examples
+
+#### Add Objects to a Set
+
+```javascript
+// Create a todo list
+var todos = gun.get('todos')
+
+todos.set({
+  text: 'Buy groceries',
+  done: false,
+  created: Date.now()
+})
+
+todos.set({
+  text: 'Walk the dog',
+  done: false,
+  created: Date.now()
+})
+```
+
+#### Add with Callback
+
+```javascript
+gun.get('messages').set({
+  from: 'alice',
+  text: 'Hello!',
+  timestamp: Date.now()
+}, function(ack){
+  if(ack.err){
+    console.error('Failed to add message:', ack.err)
+  } else {
+    console.log('Message added successfully')
+  }
+})
+```
+
+#### Link Existing Nodes
+
+```javascript
+// Create a user
+var alice = gun.get('user/alice').put({
+  name: 'Alice',
+  email: 'alice@example.com'
+})
+
+// Add to a collection
+gun.get('users').set(alice)
+
+// Now alice is in the users set
+gun.get('users').map().once(function(user){
+  console.log('User:', user.name)
+})
+```
+
+#### Building a Chat Room
+
+```javascript
+var chat = gun.get('chat/room1')
+var messages = chat.get('messages')
+
+// Send message function
+function sendMessage(text, from) {
+  messages.set({
+    text: text,
+    from: from,
+    timestamp: Date.now()
+  })
+}
+
+// Listen for new messages
+messages.map().on(function(msg){
+  displayMessage(msg)
+})
+
+sendMessage('Hello everyone!', 'alice')
+sendMessage('Hi Alice!', 'bob')
+```
+
+#### Social Media Feed
+
+```javascript
+var feed = gun.get('feed/alice')
+
+// Add a post
+feed.set({
+  type: 'post',
+  content: 'Just deployed my app!',
+  timestamp: Date.now(),
+  likes: 0
+})
+
+// Add a photo
+feed.set({
+  type: 'photo',
+  url: 'https://example.com/photo.jpg',
+  caption: 'Beautiful sunset',
+  timestamp: Date.now()
+})
+
+// Display the feed
+feed.map().on(function(item){
+  if(item.type === 'post'){
+    showPost(item)
+  } else if(item.type === 'photo'){
+    showPhoto(item)
+  }
+})
+```
+
+#### Return Value Usage
+
+```javascript
+// .set() returns reference to the new item
+var newTodo = gun.get('todos').set({
+  text: 'New task',
+  done: false
+})
+
+// You can immediately chain operations on it
+newTodo.once(function(data){
+  console.log('Todo ID:', this._.get)
+  console.log('Todo data:', data)
+})
+
+// Update the item later
+newTodo.get('done').put(true)
+```
+
+### Implementation Details
+
+From the source code (set.js:4-23):
+
+```javascript
+Gun.chain.set = function(item, cb, opt){
+  var gun = this, root = gun.back(-1), soul, tmp;
+  cb = cb || function(){};
+  opt = opt || {}; opt.item = opt.item || item;
+  if(soul = ((item||'')._||'')['#']){ (item = {})['#'] = soul }
+  if('string' == typeof (tmp = Gun.valid(item))){
+    return gun.get(soul = tmp).put(item, cb, opt)
+  }
+  if(!Gun.is(item)){
+    if(Object.plain(item)){
+      item = root.get(soul = gun.back('opt.uuid')()).put(item);
+    }
+    return gun.get(soul || root.back('opt.uuid')(7)).put(item, cb, opt);
+  }
+  gun.put(function(go){
+    item.get(function(soul, o, msg){
+      if(!soul){ return cb.call(gun, {err: Gun.log('Only a node can be linked!')}) }
+      (tmp = {})[soul] = {'#': soul}; go(tmp);
+    },true);
+  })
+  return item;
+}
+```
+
+The `.set()` method:
+1. Checks if the item is already a node (has a soul)
+2. For plain objects, creates a new node with auto-generated ID
+3. For GUN references, extracts the soul and creates a link
+4. Adds the link reference to the parent set
+5. Returns a reference to the added item
+
+### Auto-Generated IDs
+
+Each item added with `.set()` gets a unique ID:
+
+```javascript
+gun.get('items').set({ value: 'A' })  // ID: abc123xyz
+gun.get('items').set({ value: 'B' })  // ID: def456uvw
+gun.get('items').set({ value: 'C' })  // ID: ghi789rst
+
+// Access by ID if you know it
+gun.get('items').get('abc123xyz').once(function(data){
+  console.log(data)  // { value: 'A' }
+})
+```
+
+### Sets vs Objects
+
+| Feature | Set (.set) | Object (.get) |
+|---------|------------|---------------|
+| **Keys** | Auto-generated | Explicit |
+| **Order** | Unordered | By key |
+| **Duplicates** | Allowed | Overwrite |
+| **Use case** | Lists, feeds | Structured data |
+| **Iterate** | Use .map() | Use .map() or .get(key) |
+
+### Working with Sets
+
+```javascript
+// Add items
+var set = gun.get('mySet')
+set.set('item1')
+set.set('item2')
+set.set('item3')
+
+// Iterate all items
+set.map().once(function(item){
+  console.log('Item:', item)
+})
+
+// You cannot remove from a set directly
+// Instead, mark items as deleted:
+set.map().once(function(item, key){
+  gun.get('mySet').get(key).put(null)  // "Delete" the item
+})
+```
+
+### Limitations
+
+```javascript
+// ❌ Cannot add primitive values directly
+gun.get('list').set('hello')  // Will create a node containing 'hello'
+
+// ❌ No built-in duplicate prevention
+gun.get('list').set({ value: 'A' })
+gun.get('list').set({ value: 'A' })  // Both are added as separate items
+
+// ❌ No guaranteed order
+gun.get('list').set({ order: 1 })
+gun.get('list').set({ order: 2 })
+// Items may appear in any order when iterating
+
+// ✅ For ordered lists, add order property
+gun.get('list').set({ 
+  value: 'item',
+  order: Date.now()  // Use timestamp for order
+})
+```
+
+### Notes
+
+- `.set()` is perfect for collections where you don't need to choose keys
+- Items are stored as object properties with auto-generated keys
+- Use `.map()` to iterate over all items in a set
+- The returned reference allows immediate chaining on the new item
+- Sets do not enforce uniqueness - the same data can be added multiple times
+- There is no built-in `.unset()` or remove method - set properties to `null` instead
+- Sets are unordered - use timestamps if you need chronological order

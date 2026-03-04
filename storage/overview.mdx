@@ -1,0 +1,203 @@
+---
+title: "Storage Adapters Overview"
+description: "Understanding GUN's storage adapter architecture and choosing the right storage solution"
+---
+
+# Storage Adapters Overview
+
+GUN's storage layer is built on a flexible adapter architecture that allows you to persist data across different storage backends. Storage adapters enable GUN to work seamlessly in browsers, Node.js servers, and cloud environments.
+
+## What are Storage Adapters?
+
+Storage adapters are plugins that provide a consistent interface for GUN to read and write data to various storage systems. They abstract the underlying storage implementation, allowing GUN to use the same API regardless of whether data is stored on disk, in IndexedDB, or in cloud storage.
+
+All storage adapters implement a common interface:
+
+```javascript
+{
+  get: function(file, callback) { },
+  put: function(file, data, callback) { },
+  list: function(callback) { } // optional
+}
+```
+
+## Available Storage Adapters
+
+GUN provides several built-in storage adapters for different environments:
+
+### RADisk (File System)
+
+**Use for:** Node.js servers, local development
+
+- Stores data as files on the file system
+- Built on RAD (Radix) storage architecture
+- Optimized for high-performance read/write operations
+- Automatic file splitting and data organization
+
+[Learn more about RADisk →](/storage/radisk)
+
+### Rindexed (IndexedDB)
+
+**Use for:** Browser applications, Progressive Web Apps
+
+- Stores data in IndexedDB (browser database)
+- Automatic fallback to in-memory storage if IndexedDB unavailable
+- Handles connection resets to work around WebKit bugs
+- No file size limits (uses browser quota)
+
+[Learn more about Rindexed →](/storage/rindexed)
+
+### S3 Adapter
+
+**Use for:** Cloud deployments, distributed systems, S3-compatible storage
+
+- Stores data in Amazon S3 or S3-compatible services
+- Supports bucket-based organization
+- Built-in caching layer for performance
+- Compatible with DigitalOcean Spaces, MinIO, and other S3-compatible services
+
+[Learn more about S3 →](/storage/s3)
+
+## How RAD (Radix) Storage Works
+
+GUN's default storage system is called RAD (Radix), which uses a Radix tree data structure for efficient key-value storage. The RAD system provides several key features:
+
+### Radix Tree Structure
+
+A Radix tree (also called a radix trie or compressed trie) stores keys by their shared prefixes, enabling:
+
+- **Fast lookups**: O(k) where k is the key length
+- **Efficient prefix searches**: Find all keys starting with a prefix
+- **Range queries**: Retrieve data between two keys
+- **Compact storage**: Shared prefixes reduce memory usage
+
+### Batching and Performance
+
+RAD implements intelligent batching to optimize disk I/O:
+
+```javascript
+var Radisk = require('gun/lib/radisk');
+
+var rad = Radisk({
+  file: 'radata',           // Base directory/file name
+  until: 250,               // Wait 250ms before writing (batching)
+  batch: 10000,             // Max items per batch
+  chunk: 1024 * 1024,       // 1MB chunk size
+  max: 300000000 * 0.3,     // Max file size before splitting
+  store: {
+    get: function(file, cb) { },
+    put: function(file, data, cb) { }
+  }
+});
+```
+
+**Key batching features:**
+
+1. **Write Delay**: Batches writes for up to 250ms (configurable) to group multiple operations
+2. **Batch Limits**: Forces a write after reaching the batch size limit
+3. **Automatic File Splitting**: When files exceed the chunk size, RAD automatically splits them
+4. **Corruption Protection**: Batching reduces the risk of disk corruption
+
+### File Organization
+
+RAD organizes data into multiple files based on key ranges:
+
+- **Directory File**: Special file tracking all data files
+- **Data Files**: Store actual key-value pairs, split by key range
+- **Automatic Sharding**: Large datasets are automatically distributed across files
+- **Efficient Queries**: Only relevant files are read for range queries
+
+### Data Format
+
+RAD supports two storage formats:
+
+**JSON Format** (default):
+```json
+{
+  "user/alice/name": {":":"Alice", ">":1234567890},
+  "user/alice/age": {":":25, ">":1234567891}
+}
+```
+
+**RAD Format** (legacy):
+```
+!#"!"user"!#"alice"!#"name":"Alice"
+!#"!"user"!#"alice"!#"age":+25!
+```
+
+## Choosing the Right Adapter
+
+| Environment | Recommended Adapter | Why |
+|-------------|-------------------|-----|
+| Node.js Server | RADisk | Fast file system access, built for servers |
+| Browser | Rindexed | Native browser storage, works offline |
+| AWS/Cloud | S3 | Scalable, durable, managed storage |
+| Mobile App | Rindexed | Works in WebView/browser context |
+| Development | RADisk or Rindexed | Easy to inspect and debug |
+| Production | S3 or RADisk | Proven reliability and performance |
+
+## Storage Adapter Configuration
+
+Storage adapters are configured when initializing GUN:
+
+```javascript
+// Node.js with RADisk (automatic)
+const Gun = require('gun');
+require('gun/lib/radisk');
+const gun = Gun({
+  file: 'radata',  // Storage directory
+  radisk: true     // Enable RADisk (default)
+});
+
+// Browser with Rindexed (automatic)
+const Gun = require('gun');
+require('gun/lib/rindexed');
+const gun = Gun({
+  file: 'myapp',   // IndexedDB database name
+  localStorage: false  // Disable localStorage fallback
+});
+
+// S3 Storage
+const Gun = require('gun');
+require('gun/lib/rs3');
+const gun = Gun({
+  s3: {
+    bucket: 'my-gun-data',
+    region: 'us-east-1',
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  }
+});
+```
+
+## Custom Storage Adapters
+
+You can build custom storage adapters for any storage backend:
+
+- PostgreSQL
+- MongoDB
+- Redis
+- Custom databases
+- Distributed file systems
+
+[Learn how to build custom adapters →](/storage/custom-adapters)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="RADisk Adapter" icon="hard-drive" href="/storage/radisk">
+    File system storage for Node.js servers
+  </Card>
+  
+  <Card title="Rindexed Adapter" icon="database" href="/storage/rindexed">
+    IndexedDB storage for browser applications
+  </Card>
+  
+  <Card title="S3 Adapter" icon="cloud" href="/storage/s3">
+    Cloud storage with Amazon S3
+  </Card>
+  
+  <Card title="Custom Adapters" icon="code" href="/storage/custom-adapters">
+    Build your own storage adapter
+  </Card>
+</CardGroup>

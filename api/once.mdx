@@ -1,0 +1,241 @@
+---
+title: '.once()'
+description: 'Read data once without subscribing'
+---
+
+## .once()
+
+The `.once()` method reads data from the graph once and calls the callback. Unlike `.on()`, it automatically unsubscribes after receiving data, making it ideal for one-time reads.
+
+### Signature
+
+```javascript
+gun.once(callback)
+gun.once(callback, options)
+```
+
+### Parameters
+
+<ParamField path="callback" type="function">
+  Function called once when data is available.
+  
+  **Signature:** `function(data, key)`
+  
+  - `data` - The data at this node
+  - `key` - The property key
+</ParamField>
+
+<ParamField path="options" type="object" optional>
+  Options for read behavior
+  
+  <Expandable title="properties">
+    <ParamField path="wait" type="number" default="99">
+      Milliseconds to wait before assuming "not found" (for missing data)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+Returns the same GUN chain reference for method chaining.
+
+### Examples
+
+#### Basic Read
+
+```javascript
+// Read user data once
+gun.get('user/alice').once(function(data){
+  console.log('Alice:', data)
+})
+
+// Read a specific property
+gun.get('user/alice').get('name').once(function(name){
+  console.log('Name:', name)
+})
+```
+
+#### Async/Await Pattern
+
+```javascript
+// Promisify .once() for async/await
+function promiseOnce(gun) {
+  return new Promise(function(resolve, reject){
+    gun.once(function(data){
+      resolve(data)
+    })
+  })
+}
+
+// Use with async/await
+async function getUser() {
+  var user = await promiseOnce(gun.get('user/alice'))
+  console.log('User:', user)
+  return user
+}
+```
+
+#### Handle Missing Data
+
+```javascript
+// Data might not exist
+gun.get('user/nonexistent').once(function(data){
+  if(!data){
+    console.log('User not found')
+    return
+  }
+  console.log('User:', data)
+})
+```
+
+#### Chain Multiple Reads
+
+```javascript
+// Read nested data
+gun.get('user/alice').once(function(alice){
+  console.log('Alice:', alice)
+  
+  // Read related data
+  gun.get('user/alice').get('car').once(function(car){
+    console.log('Alice\'s car:', car)
+  })
+})
+```
+
+#### Custom Wait Time
+
+```javascript
+// Wait longer for slow networks
+gun.get('large/dataset').once(function(data){
+  console.log('Data loaded:', data)
+}, { wait: 500 })  // Wait 500ms instead of default 99ms
+```
+
+#### Read from Collection
+
+```javascript
+// Read all items from a set
+gun.get('todos').map().once(function(todo){
+  console.log('Todo:', todo)
+})
+
+// This calls .once() for each item in the set
+```
+
+#### Conditional Reading
+
+```javascript
+function readIfExists(key) {
+  gun.get(key).once(function(data){
+    if(data === undefined){
+      console.log(key + ' does not exist')
+      return
+    }
+    console.log(key + ':', data)
+  })
+}
+
+readIfExists('user/alice')
+readIfExists('user/bob')
+```
+
+### Implementation Details
+
+From the source code (on.js:57-85):
+
+```javascript
+Gun.chain.once = function(cb, opt){
+  opt = opt || {};
+  if(!cb){ return none(this,opt) }
+  var gun = this, cat = gun._, root = cat.root, data = cat.put, 
+      id = String.random(7), one, tmp;
+  gun.get(function(data, key, msg, eve){
+    var $ = this, at = $._, one = (at.one||(at.one={}));
+    if(eve.stun){ return } if('' === one[id]){ return }
+    if(true === (tmp = Gun.valid(data))){ once(); return }
+    if('string' == typeof tmp){ return }
+    clearTimeout((cat.one||'')[id]);
+    clearTimeout(one[id]);
+    one[id] = setTimeout(once, opt.wait||99);
+    function once(f){
+      // ... handle data resolution and callback
+      if(eve.stun){ return } if('' === one[id]){ return } one[id] = '';
+      if(cat.soul || cat.has){ eve.off() }
+      cb.call($, tmp, at.get);
+      clearTimeout(one[id]);
+    }
+  }, {on: 1});
+  return gun;
+}
+```
+
+The `.once()` method:
+1. Subscribes to data using `.get()`
+2. Waits for data to arrive or timeout
+3. Calls the callback with the data
+4. Automatically unsubscribes with `.off()`
+5. Cleans up internal references
+
+### Behavior with Links
+
+```javascript
+// If data is a link, .once() resolves it
+gun.get('user/alice').get('car').once(function(car){
+  // car is the actual car data, not a link reference
+  console.log('Color:', car.color)
+})
+
+// For the link itself, use immediate read
+var carLink = gun.get('user/alice').get('car')._
+```
+
+### Performance Considerations
+
+```javascript
+// ❌ Inefficient - multiple .once() calls
+for(var i = 0; i < 100; i++){
+  gun.get('items').get(i).once(function(item){
+    console.log(item)
+  })
+}
+
+// ✅ Better - use .map().once()
+gun.get('items').map().once(function(item){
+  console.log(item)
+})
+```
+
+### Wait Timeout
+
+The default wait time (99ms) determines when GUN assumes data doesn't exist:
+
+```javascript
+// Short wait for local/cached data
+gun.get('cached/data').once(function(data){
+  // Called within ~99ms
+})
+
+// Longer wait for remote/slow data
+gun.get('remote/data').once(function(data){
+  // Called within ~500ms or when data arrives
+}, { wait: 500 })
+```
+
+### Differences from .on()
+
+| Feature | .once() | .on() |
+|---------|---------|--------|
+| **Triggers** | One time only | Every update |
+| **Unsubscribe** | Automatic | Manual with `.off()` |
+| **Use case** | Read current value | Realtime sync |
+| **Performance** | Cleans up automatically | Stays in memory |
+| **Memory** | Low (auto cleanup) | Can leak if not unsubscribed |
+
+### Notes
+
+- `.once()` is perfect for reading data without setting up a subscription
+- It automatically cleans up, preventing memory leaks
+- For realtime updates, use `.on()` instead
+- The callback might not fire if data doesn't exist and timeout expires
+- Links are automatically resolved to their target data
+- The callback receives `undefined` for non-existent data after the wait timeout

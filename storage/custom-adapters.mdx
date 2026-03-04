@@ -1,0 +1,774 @@
+---
+title: "Custom Storage Adapters"
+description: "Build custom storage adapters to integrate GUN with any database or storage backend"
+---
+
+# Custom Storage Adapters
+
+GUN's plugin architecture makes it easy to create custom storage adapters for any database or storage system. This guide shows you how to build adapters for PostgreSQL, MongoDB, Redis, or any other backend.
+
+## Storage Adapter Interface
+
+All storage adapters implement a simple interface with two required methods:
+
+```javascript
+const myAdapter = {
+  // Required: Read data
+  get: function(key, callback) {
+    // callback(error, data)
+  },
+  
+  // Required: Write data
+  put: function(key, data, callback) {
+    // callback(error, success)
+  },
+  
+  // Optional: List all keys
+  list: function(callback) {
+    // callback(key) for each key
+    // callback() when done
+  }
+};
+```
+
+## Basic Adapter Structure
+
+Here's a template for creating custom storage adapters:
+
+```javascript
+module.exports = function CustomAdapter(opt) {
+  opt = opt || {};
+  opt.file = String(opt.file || 'radata');
+  
+  // Prevent duplicate instances
+  var has = (CustomAdapter.has || (CustomAdapter.has = {}))[opt.file];
+  if (has) { return has; }
+  
+  var store = function Store() {};
+  CustomAdapter.has[opt.file] = store;
+  
+  // Initialize your storage backend
+  var db; // Your database connection
+  
+  store.put = function(key, data, cb) {
+    // Write data to your storage backend
+    // Call cb(error) on failure or cb(null, 1) on success
+  };
+  
+  store.get = function(key, cb) {
+    // Read data from your storage backend
+    // Call cb(error) on failure or cb(null, data) on success
+  };
+  
+  store.list = function(cb) {
+    // Optional: List all keys
+    // Call cb(key) for each key
+    // Call cb() with no args when done
+  };
+  
+  return store;
+};
+```
+
+## Integrating with GUN
+
+Adapters integrate with GUN using the `store.js` plugin architecture:
+
+```javascript
+var Gun = require('gun');
+
+Gun.on('create', function(root) {
+  this.to.next(root);
+  
+  // Initialize your adapter
+  var opt = root.opt;
+  if (opt.customStorage) {
+    opt.store = opt.store || require('./custom-adapter')(opt);
+  }
+});
+```
+
+From `/home/daytona/workspace/source/lib/store.js:3-35`, we can see how GUN's storage system works:
+
+```javascript
+Gun.on('create', function(root){
+  this.to.next(root);
+  root.opt.store = root.opt.store || Store(root.opt);
+});
+```
+
+## Example: Redis Adapter
+
+Here's a complete Redis storage adapter:
+
+```javascript
+var Gun = require('gun');
+var Redis = require('redis');
+
+function RedisAdapter(opt) {
+  opt = opt || {};
+  opt.file = String(opt.file || 'gun');
+  
+  var has = (RedisAdapter.has || (RedisAdapter.has = {}))[opt.file];
+  if (has) { return has; }
+  
+  var store = function Store() {};
+  RedisAdapter.has[opt.file] = store;
+  
+  // Create Redis client
+  var redis = Redis.createClient({
+    host: opt.redis?.host || 'localhost',
+    port: opt.redis?.port || 6379,
+    password: opt.redis?.password,
+    db: opt.redis?.db || 0
+  });
+  
+  redis.on('error', function(err) {
+    console.error('Redis error:', err);
+  });
+  
+  store.put = function(key, data, cb) {
+    var prefixedKey = opt.file + '/' + key;
+    
+    redis.set(prefixedKey, data, function(err) {
+      if (err) {
+        cb(err);
+      } else {
+        cb(null, 1);
+      }
+    });
+  };
+  
+  store.get = function(key, cb) {
+    var prefixedKey = opt.file + '/' + key;
+    
+    redis.get(prefixedKey, function(err, data) {
+      if (err) {
+        cb(err);
+      } else {
+        cb(null, data);
+      }
+    });
+  };
+  
+  store.list = function(cb) {
+    var pattern = opt.file + '/*';
+    
+    redis.keys(pattern, function(err, keys) {
+      if (err) return cb();
+      
+      keys.forEach(function(key) {
+        // Remove prefix before calling callback
+        var cleanKey = key.substring(opt.file.length + 1);
+        cb(cleanKey);
+      });
+      
+      cb(); // Signal end of list
+    });
+  };
+  
+  return store;
+}
+
+// Auto-enable for GUN
+Gun.on('create', function(root) {
+  this.to.next(root);
+  if (root.opt.redis) {
+    root.opt.store = root.opt.store || RedisAdapter(root.opt);
+  }
+});
+
+module.exports = RedisAdapter;
+```
+
+### Using the Redis Adapter
+
+```javascript
+const Gun = require('gun');
+require('./redis-adapter');
+
+const gun = Gun({
+  file: 'myapp',
+  redis: {
+    host: 'localhost',
+    port: 6379,
+    password: 'your-password',
+    db: 0
+  }
+});
+
+// Data is now stored in Redis
+gun.get('user/alice').put({ name: 'Alice' });
+```
+
+## Example: MongoDB Adapter
+
+Here's a MongoDB storage adapter:
+
+```javascript
+var Gun = require('gun');
+var MongoClient = require('mongodb').MongoClient;
+
+function MongoAdapter(opt) {
+  opt = opt || {};
+  opt.file = String(opt.file || 'gun');
+  
+  var has = (MongoAdapter.has || (MongoAdapter.has = {}))[opt.file];
+  if (has) { return has; }
+  
+  var store = function Store() {};
+  MongoAdapter.has[opt.file] = store;
+  
+  var db, collection;
+  var pending = [];
+  
+  // Connect to MongoDB
+  var mongoUrl = opt.mongo?.url || 'mongodb://localhost:27017';
+  var dbName = opt.mongo?.database || 'gun';
+  var collectionName = opt.file;
+  
+  MongoClient.connect(mongoUrl, { useUnifiedTopology: true }, function(err, client) {
+    if (err) {
+      console.error('MongoDB connection error:', err);
+      return;
+    }
+    
+    db = client.db(dbName);
+    collection = db.collection(collectionName);
+    
+    // Create index on key field
+    collection.createIndex({ key: 1 }, { unique: true });
+    
+    // Process pending operations
+    pending.forEach(function(op) {
+      op();
+    });
+    pending = [];
+  });
+  
+  store.put = function(key, data, cb) {
+    function doPut() {
+      collection.updateOne(
+        { key: key },
+        { $set: { key: key, data: data } },
+        { upsert: true },
+        function(err) {
+          if (err) {
+            cb(err);
+          } else {
+            cb(null, 1);
+          }
+        }
+      );
+    }
+    
+    if (!collection) {
+      pending.push(doPut);
+    } else {
+      doPut();
+    }
+  };
+  
+  store.get = function(key, cb) {
+    function doGet() {
+      collection.findOne({ key: key }, function(err, doc) {
+        if (err) {
+          cb(err);
+        } else {
+          cb(null, doc ? doc.data : undefined);
+        }
+      });
+    }
+    
+    if (!collection) {
+      pending.push(doGet);
+    } else {
+      doGet();
+    }
+  };
+  
+  store.list = function(cb) {
+    if (!collection) {
+      return cb();
+    }
+    
+    collection.find({}).forEach(
+      function(doc) {
+        cb(doc.key);
+      },
+      function(err) {
+        cb(); // Signal end of list
+      }
+    );
+  };
+  
+  return store;
+}
+
+Gun.on('create', function(root) {
+  this.to.next(root);
+  if (root.opt.mongo) {
+    root.opt.store = root.opt.store || MongoAdapter(root.opt);
+  }
+});
+
+module.exports = MongoAdapter;
+```
+
+### Using the MongoDB Adapter
+
+```javascript
+const Gun = require('gun');
+require('./mongo-adapter');
+
+const gun = Gun({
+  file: 'myapp',
+  mongo: {
+    url: 'mongodb://localhost:27017',
+    database: 'gun-data'
+  }
+});
+```
+
+## Example: PostgreSQL Adapter
+
+Here's a PostgreSQL storage adapter:
+
+```javascript
+var Gun = require('gun');
+var { Pool } = require('pg');
+
+function PostgresAdapter(opt) {
+  opt = opt || {};
+  opt.file = String(opt.file || 'gun');
+  
+  var has = (PostgresAdapter.has || (PostgresAdapter.has = {}))[opt.file];
+  if (has) { return has; }
+  
+  var store = function Store() {};
+  PostgresAdapter.has[opt.file] = store;
+  
+  // Create PostgreSQL connection pool
+  var pool = new Pool({
+    host: opt.postgres?.host || 'localhost',
+    port: opt.postgres?.port || 5432,
+    database: opt.postgres?.database || 'gun',
+    user: opt.postgres?.user,
+    password: opt.postgres?.password,
+    max: 20
+  });
+  
+  var tableName = opt.file.replace(/[^a-zA-Z0-9_]/g, '_');
+  
+  // Create table if it doesn't exist
+  pool.query(`
+    CREATE TABLE IF NOT EXISTS "${tableName}" (
+      key TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `, function(err) {
+    if (err) {
+      console.error('Failed to create table:', err);
+    }
+  });
+  
+  store.put = function(key, data, cb) {
+    var query = `
+      INSERT INTO "${tableName}" (key, data, updated_at)
+      VALUES ($1, $2, CURRENT_TIMESTAMP)
+      ON CONFLICT (key) DO UPDATE
+      SET data = $2, updated_at = CURRENT_TIMESTAMP
+    `;
+    
+    pool.query(query, [key, data], function(err) {
+      if (err) {
+        cb(err);
+      } else {
+        cb(null, 1);
+      }
+    });
+  };
+  
+  store.get = function(key, cb) {
+    var query = `SELECT data FROM "${tableName}" WHERE key = $1`;
+    
+    pool.query(query, [key], function(err, result) {
+      if (err) {
+        cb(err);
+      } else {
+        cb(null, result.rows[0] ? result.rows[0].data : undefined);
+      }
+    });
+  };
+  
+  store.list = function(cb) {
+    var query = `SELECT key FROM "${tableName}" ORDER BY key`;
+    
+    pool.query(query, function(err, result) {
+      if (err) return cb();
+      
+      result.rows.forEach(function(row) {
+        cb(row.key);
+      });
+      
+      cb(); // Signal end of list
+    });
+  };
+  
+  return store;
+}
+
+Gun.on('create', function(root) {
+  this.to.next(root);
+  if (root.opt.postgres) {
+    root.opt.store = root.opt.store || PostgresAdapter(root.opt);
+  }
+});
+
+module.exports = PostgresAdapter;
+```
+
+### Using the PostgreSQL Adapter
+
+```javascript
+const Gun = require('gun');
+require('./postgres-adapter');
+
+const gun = Gun({
+  file: 'myapp',
+  postgres: {
+    host: 'localhost',
+    port: 5432,
+    database: 'gundb',
+    user: 'postgres',
+    password: 'your-password'
+  }
+});
+```
+
+## Advanced Adapter Features
+
+### Batching Writes
+
+Improve performance by batching multiple writes:
+
+```javascript
+function BatchingAdapter(opt) {
+  var store = {};
+  var batch = [];
+  var batchTimer;
+  
+  store.put = function(key, data, cb) {
+    // Add to batch
+    batch.push({ key: key, data: data, cb: cb });
+    
+    // Clear existing timer
+    clearTimeout(batchTimer);
+    
+    // Set new timer
+    batchTimer = setTimeout(function() {
+      flush();
+    }, 100); // Flush after 100ms
+    
+    // Flush if batch is large
+    if (batch.length >= 100) {
+      clearTimeout(batchTimer);
+      flush();
+    }
+  };
+  
+  function flush() {
+    if (!batch.length) return;
+    
+    var items = batch.splice(0, batch.length);
+    
+    // Write all items in batch
+    // (implementation depends on your storage backend)
+    items.forEach(function(item) {
+      // Write item.key and item.data
+      item.cb(null, 1);
+    });
+  }
+  
+  return store;
+}
+```
+
+### Caching Layer
+
+Add an in-memory cache to reduce database queries:
+
+```javascript
+function CachingAdapter(opt) {
+  var store = {};
+  var cache = {};
+  var cacheSize = opt.cacheSize || 1000;
+  var cacheKeys = [];
+  
+  store.get = function(key, cb) {
+    // Check cache first
+    if (cache.hasOwnProperty(key)) {
+      return cb(null, cache[key]);
+    }
+    
+    // Fetch from storage
+    fetchFromStorage(key, function(err, data) {
+      if (err) return cb(err);
+      
+      // Add to cache
+      if (!cache.hasOwnProperty(key)) {
+        cacheKeys.push(key);
+        
+        // Evict oldest if cache is full
+        if (cacheKeys.length > cacheSize) {
+          var oldKey = cacheKeys.shift();
+          delete cache[oldKey];
+        }
+      }
+      
+      cache[key] = data;
+      cb(null, data);
+    });
+  };
+  
+  store.put = function(key, data, cb) {
+    // Update cache
+    cache[key] = data;
+    
+    // Write to storage
+    writeToStorage(key, data, cb);
+  };
+  
+  return store;
+}
+```
+
+### Connection Pooling
+
+Manage database connections efficiently:
+
+```javascript
+function PooledAdapter(opt) {
+  var store = {};
+  var pool = [];
+  var poolSize = opt.poolSize || 10;
+  var pending = [];
+  
+  // Initialize connection pool
+  for (var i = 0; i < poolSize; i++) {
+    pool.push(createConnection());
+  }
+  
+  function getConnection(cb) {
+    if (pool.length > 0) {
+      cb(pool.pop());
+    } else {
+      pending.push(cb);
+    }
+  }
+  
+  function releaseConnection(conn) {
+    if (pending.length > 0) {
+      var cb = pending.shift();
+      cb(conn);
+    } else {
+      pool.push(conn);
+    }
+  }
+  
+  store.get = function(key, cb) {
+    getConnection(function(conn) {
+      conn.get(key, function(err, data) {
+        releaseConnection(conn);
+        cb(err, data);
+      });
+    });
+  };
+  
+  return store;
+}
+```
+
+### Error Recovery
+
+Handle transient errors gracefully:
+
+```javascript
+function ResilientAdapter(opt) {
+  var store = {};
+  var maxRetries = opt.maxRetries || 3;
+  
+  function retry(fn, retries, cb) {
+    fn(function(err, data) {
+      if (err && retries > 0) {
+        console.log('Retrying...', retries, 'attempts left');
+        setTimeout(function() {
+          retry(fn, retries - 1, cb);
+        }, 1000); // Wait 1 second before retry
+      } else {
+        cb(err, data);
+      }
+    });
+  }
+  
+  store.get = function(key, cb) {
+    retry(function(done) {
+      fetchFromStorage(key, done);
+    }, maxRetries, cb);
+  };
+  
+  return store;
+}
+```
+
+## Testing Your Adapter
+
+Create comprehensive tests for your adapter:
+
+```javascript
+const Gun = require('gun');
+require('./my-adapter');
+const assert = require('assert');
+
+describe('My Custom Adapter', function() {
+  var gun;
+  
+  beforeEach(function() {
+    gun = Gun({
+      file: 'test',
+      customStorage: true
+    });
+  });
+  
+  it('should write and read data', function(done) {
+    gun.get('test/key').put({ value: 'hello' }, function(ack) {
+      assert(!ack.err);
+      
+      gun.get('test/key').once(function(data) {
+        assert.equal(data.value, 'hello');
+        done();
+      });
+    });
+  });
+  
+  it('should handle concurrent writes', function(done) {
+    var count = 0;
+    
+    for (var i = 0; i < 100; i++) {
+      gun.get('test/' + i).put({ value: i }, function(ack) {
+        assert(!ack.err);
+        count++;
+        if (count === 100) done();
+      });
+    }
+  });
+  
+  it('should list all keys', function(done) {
+    var keys = [];
+    var store = gun.opt.store;
+    
+    gun.get('test/a').put({ value: 1 });
+    gun.get('test/b').put({ value: 2 });
+    gun.get('test/c').put({ value: 3 });
+    
+    setTimeout(function() {
+      store.list(function(key) {
+        if (key) {
+          keys.push(key);
+        } else {
+          assert(keys.length >= 3);
+          done();
+        }
+      });
+    }, 100);
+  });
+});
+```
+
+## Best Practices
+
+1. **Singleton Pattern**: Use `Adapter.has` to prevent duplicate instances
+2. **Error Handling**: Always call callbacks with proper error handling
+3. **Async Operations**: Support asynchronous storage backends
+4. **Key Prefixing**: Prefix keys to avoid collisions
+5. **Connection Management**: Handle connection lifecycle properly
+6. **Batching**: Batch writes when possible for performance
+7. **Caching**: Add caching layer for frequently accessed data
+8. **Testing**: Write comprehensive tests
+9. **Documentation**: Document configuration options
+10. **Logging**: Add optional logging for debugging
+
+## Common Pitfalls
+
+### Don't Block the Event Loop
+
+```javascript
+// Bad: Synchronous operation
+store.put = function(key, data, cb) {
+  fs.writeFileSync(key, data); // Blocks!
+  cb(null, 1);
+};
+
+// Good: Async operation
+store.put = function(key, data, cb) {
+  fs.writeFile(key, data, function(err) {
+    cb(err, err ? null : 1);
+  });
+};
+```
+
+### Handle Missing Keys
+
+```javascript
+// Bad: Error on missing key
+store.get = function(key, cb) {
+  db.get(key, cb); // Errors if key doesn't exist
+};
+
+// Good: Return undefined for missing keys
+store.get = function(key, cb) {
+  db.get(key, function(err, data) {
+    if (err && err.code === 'NOT_FOUND') {
+      return cb(null, undefined);
+    }
+    cb(err, data);
+  });
+};
+```
+
+### Always Call Callbacks
+
+```javascript
+// Bad: Callback may not be called
+store.put = function(key, data, cb) {
+  if (!key) return; // Callback not called!
+  db.put(key, data, cb);
+};
+
+// Good: Always call callback
+store.put = function(key, data, cb) {
+  if (!key) return cb('Key required');
+  db.put(key, data, cb);
+};
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Storage Overview" icon="database" href="/storage/overview">
+    Learn about storage architecture
+  </Card>
+  
+  <Card title="RADisk Adapter" icon="hard-drive" href="/storage/radisk">
+    Study the RADisk implementation
+  </Card>
+  
+  <Card title="Plugin System" icon="plug" href="/storage/custom-adapters">
+    Build GUN plugins
+  </Card>
+  
+  <Card title="Performance" icon="gauge-high" href="/advanced/performance">
+    Optimize storage performance
+  </Card>
+</CardGroup>

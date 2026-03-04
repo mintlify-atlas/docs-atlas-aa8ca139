@@ -1,0 +1,581 @@
+---
+title: Performance
+description: Performance characteristics, benchmarks, and optimization techniques for GUN applications
+---
+
+GUN is designed for high-performance, real-time applications. The engine is capable of **20M+ API operations per second** while maintaining a tiny footprint of just **~9KB gzipped**.
+
+Source: `~/workspace/source/README.md:180`
+
+## Performance Characteristics
+
+### Throughput
+
+- **20M+ API ops/sec**: In-memory operations on modern hardware
+- **Sub-millisecond latency**: For local reads and writes
+- **Streaming writes**: No blocking on disk I/O
+- **Batched network I/O**: Multiple messages sent together
+
+### Memory Efficiency
+
+- **9KB core engine**: Minimal browser footprint
+- **Configurable memory limits**: Control cache size
+- **Automatic garbage collection**: Least-recently-used eviction
+
+```javascript
+const gun = Gun({
+  memory: 1000000000, // ~1GB memory cache
+  max: 300000000 * 0.3 // ~90MB max message size
+});
+```
+
+Source: `~/workspace/source/src/mesh.js:15-16`
+
+## Optimization Strategies
+
+### 1. Minimize Subscriptions
+
+Each `.on()` creates a live subscription. Limit subscriptions to only what you need:
+
+```javascript
+// ❌ BAD: Too many subscriptions
+gun.get('users').map().on(user => {
+  console.log(user);
+});
+
+// ✅ GOOD: Use .once() for one-time reads
+gun.get('users').map().once(user => {
+  console.log(user);
+});
+
+// ✅ GOOD: Unsubscribe when done
+const unsub = gun.get('data').on(data => {
+  console.log(data);
+});
+
+// Later
+unsub.off();
+```
+
+GUN warns when you have more than 10,000 active subscriptions:
+
+Source: `~/workspace/source/src/mesh.js:336`
+
+### 2. Batch Writes
+
+Group multiple writes into a single operation:
+
+```javascript
+// ❌ BAD: Multiple separate writes
+gun.get('user').get('name').put('Alice');
+gun.get('user').get('age').put(30);
+gun.get('user').get('email').put('alice@example.com');
+
+// ✅ GOOD: Single batched write
+gun.get('user').put({
+  name: 'Alice',
+  age: 30,
+  email: 'alice@example.com'
+});
+```
+
+### 3. Use Property Paths
+
+Access nested data efficiently:
+
+```javascript
+// ❌ SLOWER: Multiple get() calls
+gun.get('user').get('profile').get('avatar').get('url').once(...);
+
+// ✅ FASTER: Direct path access (if supported by your GUN version)
+gun.get('user').get('profile.avatar.url').once(...);
+```
+
+### 4. Limit Graph Depth
+
+Deeply nested graphs are slower to traverse:
+
+```javascript
+// ❌ BAD: Deep nesting
+gun.get('a').get('b').get('c').get('d').get('e').get('f');
+
+// ✅ GOOD: Flatter structure
+gun.get('a-b-c').get('value');
+```
+
+### 5. Configure Message Batching
+
+```javascript
+const gun = Gun({
+  gap: 0,    // Milliseconds to wait before sending batch (default: 0)
+  pack: 3000, // Target batch packet size (default: ~3KB)
+  puff: 9    // Messages processed per event loop tick
+});
+```
+
+Source: `~/workspace/source/src/mesh.js:14-17`
+
+- **gap**: Lower values = faster sync, higher network overhead
+- **pack**: Larger values = more efficient network use, higher latency
+- **puff**: Higher values = faster processing, more CPU blocking
+
+### 6. Enable Super Peer Mode
+
+For relay peers, enable super mode to optimize routing:
+
+```javascript
+const gun = Gun({
+  super: true,  // Optimize for relay/server role
+  faith: true   // Trust incoming data (performance optimization)
+});
+```
+
+Source: `~/workspace/source/lib/server.js:8-9`
+
+**Warning**: Only enable `faith: true` on trusted relay peers, not in browsers.
+
+## Storage Performance
+
+### In-Memory Only
+
+For maximum performance, run without persistence:
+
+```javascript
+const gun = Gun(); // No storage plugin
+```
+
+### File System Storage
+
+Node.js file system storage:
+
+```javascript
+const gun = Gun({
+  file: 'data.json' // Uses gun/lib/rfs.js
+});
+```
+
+### RAD Storage
+
+GUN's optimized storage format:
+
+```javascript
+const gun = Gun({
+  rad: true // Radix storage for better performance
+});
+```
+
+### S3 Storage
+
+Amazon S3 integration:
+
+```javascript
+const gun = Gun({
+  s3: {
+    key: process.env.AWS_ACCESS_KEY_ID,
+    secret: process.env.AWS_SECRET_ACCESS_KEY,
+    bucket: process.env.AWS_S3_BUCKET
+  }
+});
+```
+
+## Network Performance
+
+### WebSocket vs HTTP
+
+WebSocket provides significant performance benefits:
+
+- **Persistent connection**: No TCP handshake overhead
+- **Bidirectional**: Real-time updates
+- **Lower latency**: No HTTP header overhead
+
+```javascript
+// Automatically uses WebSocket when available
+const gun = Gun({
+  peers: ['http://localhost:8765/gun'] // Upgrades to ws://
+});
+```
+
+### Connection Pooling
+
+Limit concurrent peer connections:
+
+```javascript
+const gun = Gun({
+  rtc: {
+    max: 55 // Max WebRTC connections (default)
+  }
+});
+```
+
+Source: `~/workspace/source/lib/webrtc.js:36`
+
+### Multicast for Local Networks
+
+UDP multicast is extremely fast for local networks:
+
+```javascript
+const gun = Gun({
+  multicast: {
+    address: '233.255.255.255',
+    port: 8765
+  }
+});
+```
+
+Source: `~/workspace/source/lib/multicast.js:10-13`
+
+## JSON Performance
+
+### Async JSON Parsing
+
+GUN supports asynchronous JSON parsing to prevent UI blocking:
+
+```javascript
+// Install: npm install gun/lib/yson.js
+require('gun/lib/yson');
+```
+
+YSON (yielding JSON) parses large payloads without blocking the event loop.
+
+Source: `~/workspace/source/src/mesh.js:5-8`
+
+### Warning System
+
+GUN warns if JSON operations take too long:
+
+```javascript
+// "Warning: JSON blocking CPU detected. Add gun/lib/yson.js to fix."
+```
+
+Source: `~/workspace/source/src/mesh.js:8`
+
+## CPU Optimization
+
+### Event Loop Scheduling
+
+GUN uses `setTimeout.turn` for cooperative multitasking:
+
+```javascript
+// Process messages in chunks to avoid blocking
+function processQueue(){
+  const chunk = queue.splice(0, puff); // Process 'puff' items
+  chunk.forEach(process);
+  
+  if(queue.length){
+    setTimeout(processQueue, 0); // Yield to event loop
+  }
+}
+```
+
+Source: `~/workspace/source/src/mesh.js:18`
+
+### Configurable Processing Rate
+
+```javascript
+const gun = Gun({
+  puff: 9 // Process 9 messages per tick (default)
+});
+
+// Higher puff = faster but more blocking
+// Lower puff = slower but less blocking
+```
+
+Source: `~/workspace/source/src/mesh.js:17`
+
+## Monitoring Performance
+
+### Enable Statistics
+
+```javascript
+console.STAT = {};
+
+setInterval(() => {
+  console.log('Stats:', {
+    peers: console.STAT.peers,
+    memory: console.STAT.memused,
+    messagesIn: gun.opt().mesh.hear.c,
+    messagesOut: gun.opt().mesh.say.c,
+    bytesIn: gun.opt().mesh.hear.d,
+    bytesOut: gun.opt().mesh.say.d
+  });
+}, 1000);
+```
+
+Source: `~/workspace/source/src/mesh.js:103, 195, 328`
+
+### Message Counters
+
+```javascript
+const mesh = gun.opt().mesh;
+
+console.log('Messages received:', mesh.hear.c);
+console.log('Bytes received:', mesh.hear.d);
+console.log('Messages sent:', mesh.say.c);
+console.log('Bytes sent:', mesh.say.d);
+```
+
+Source: `~/workspace/source/src/mesh.js:103, 195`
+
+### Latency Tracking
+
+```javascript
+gun.on('out', function(msg){
+  msg.DBG = {out: Date.now()};
+  this.to.next(msg);
+});
+
+gun.on('in', function(msg){
+  if(msg.DBG){
+    const latency = Date.now() - msg.DBG.out;
+    console.log('Round-trip latency:', latency, 'ms');
+  }
+  this.to.next(msg);
+});
+```
+
+## Profiling
+
+### Node.js Profiling
+
+GUN includes built-in profiling support:
+
+```bash
+# Start with profiling enabled
+node --prof server.js
+
+# Generate flame graph
+npm run debug
+
+# Open v8data.json in https://mapbox.github.io/flamebearer/
+```
+
+Source: `~/workspace/source/package.json:12`
+
+### Browser Profiling
+
+Use browser DevTools:
+
+1. Open Performance tab
+2. Record while using your app
+3. Look for GUN-related function calls
+4. Identify bottlenecks
+
+## Benchmarking
+
+### Write Performance
+
+```javascript
+const gun = Gun();
+const iterations = 1000000;
+
+const start = Date.now();
+
+for(let i = 0; i < iterations; i++){
+  gun.get('test').get(i).put({value: i});
+}
+
+const elapsed = Date.now() - start;
+const opsPerSec = iterations / (elapsed / 1000);
+
+console.log(`${opsPerSec.toFixed(0)} ops/sec`);
+```
+
+### Read Performance
+
+```javascript
+const gun = Gun();
+const iterations = 1000000;
+
+// Prepare data
+for(let i = 0; i < 1000; i++){
+  gun.get('test').get(i).put({value: i});
+}
+
+const start = Date.now();
+let completed = 0;
+
+for(let i = 0; i < iterations; i++){
+  gun.get('test').get(i % 1000).once(() => {
+    if(++completed === iterations){
+      const elapsed = Date.now() - start;
+      const opsPerSec = iterations / (elapsed / 1000);
+      console.log(`${opsPerSec.toFixed(0)} ops/sec`);
+    }
+  });
+}
+```
+
+## Production Optimizations
+
+### 1. Use a CDN
+
+```html
+<!-- Serve GUN from CDN -->
+<script src="https://cdn.jsdelivr.net/npm/gun/gun.min.js"></script>
+```
+
+### 2. Enable Compression
+
+```javascript
+const express = require('express');
+const compression = require('compression');
+const Gun = require('gun');
+
+const app = express();
+app.use(compression()); // Gzip responses
+app.use(Gun.serve);
+```
+
+### 3. Use Process Clustering
+
+```javascript
+const cluster = require('cluster');
+const numCPUs = require('os').cpus().length;
+
+if(cluster.isMaster){
+  for(let i = 0; i < numCPUs; i++){
+    cluster.fork();
+  }
+  
+  cluster.on('exit', () => {
+    cluster.fork(); // Restart on crash
+  });
+} else {
+  // Worker process
+  const Gun = require('gun');
+  const server = require('http').createServer();
+  
+  Gun({web: server.listen(8765)});
+}
+```
+
+Source: `~/workspace/source/examples/http.js:2-5`
+
+### 4. Configure Timeouts
+
+```javascript
+const gun = Gun({
+  lack: 9000 // Time to wait before retrying failed peer (ms)
+});
+```
+
+Source: `~/workspace/source/src/mesh.js:330`
+
+### 5. Limit Message Size
+
+```javascript
+const gun = Gun({
+  max: 300000000 * 0.3 // Max message size (~90MB)
+});
+```
+
+Source: `~/workspace/source/src/mesh.js:15`
+
+Large messages are rejected:
+
+Source: `~/workspace/source/src/mesh.js:26`
+
+## Common Performance Issues
+
+### Issue: High Memory Usage
+
+**Cause**: Too many subscriptions or large datasets in memory
+
+**Solution**:
+```javascript
+// Unsubscribe from unused data
+const off = gun.get('data').on(callback);
+off(); // Stop listening
+
+// Use .once() instead of .on()
+gun.get('data').once(callback);
+
+// Configure memory limits
+const gun = Gun({
+  memory: 100000000 // 100MB limit
+});
+```
+
+### Issue: Slow Initial Load
+
+**Cause**: Loading large datasets from storage
+
+**Solution**:
+```javascript
+// Lazy load data
+gun.get('users').map().once(user => {
+  // Only load what you need
+  if(user.active){
+    displayUser(user);
+  }
+});
+
+// Use pagination
+gun.get('items').get('page1').map().once(...);
+```
+
+### Issue: Network Congestion
+
+**Cause**: Too many messages, large messages
+
+**Solution**:
+```javascript
+// Batch updates
+const updates = {};
+Object.assign(updates, {prop1: val1, prop2: val2});
+gun.get('node').put(updates);
+
+// Increase batching
+const gun = Gun({
+  gap: 50, // Wait 50ms before sending
+  pack: 10000 // 10KB batches
+});
+```
+
+### Issue: CPU Spikes
+
+**Cause**: Large JSON parsing, synchronous operations
+
+**Solution**:
+```javascript
+// Use async JSON parser
+require('gun/lib/yson');
+
+// Reduce processing per tick
+const gun = Gun({
+  puff: 3 // Process fewer messages per tick
+});
+```
+
+## Best Practices
+
+1. **Use `.once()` for one-time reads**: Avoid unnecessary subscriptions
+2. **Batch writes**: Group multiple updates together
+3. **Limit graph depth**: Keep data structures flat
+4. **Configure memory limits**: Prevent unbounded growth
+5. **Enable async JSON parsing**: Add `gun/lib/yson.js`
+6. **Monitor statistics**: Track performance metrics
+7. **Profile regularly**: Identify bottlenecks early
+8. **Use super peer mode**: Optimize relay peers
+9. **Implement pagination**: Don't load entire datasets
+10. **Unsubscribe when done**: Clean up listeners
+
+## Performance Checklist
+
+- [ ] Using `.once()` instead of `.on()` where possible
+- [ ] Batching writes together
+- [ ] Configured appropriate memory limits
+- [ ] Added `gun/lib/yson.js` for async JSON
+- [ ] Limited active subscriptions
+- [ ] Monitoring performance metrics
+- [ ] Using WebSocket for real-time sync
+- [ ] Enabled compression on server
+- [ ] Profiled application under load
+- [ ] Optimized graph structure depth
+
+## Next Steps
+
+- Understand [CAP Theorem](/advanced/cap-theorem) tradeoffs
+- Learn about [Conflict Resolution](/advanced/conflict-resolution)
+- Configure [Networking](/advanced/networking) for your topology
+- Deploy to [Production](/advanced/deployment)

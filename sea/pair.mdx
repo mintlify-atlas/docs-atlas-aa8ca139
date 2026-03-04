@@ -1,0 +1,374 @@
+---
+title: 'SEA.pair()'
+description: 'Generate cryptographic key pairs for signing and encryption'
+---
+
+# SEA.pair()
+
+Generate a new cryptographic key pair for use with SEA. Each pair contains keys for both signing/verifying and encryption/decryption.
+
+## Syntax
+
+```javascript
+const pair = await SEA.pair()
+SEA.pair(callback)
+SEA.pair(callback, options)
+```
+
+## Parameters
+
+- **callback** (function, optional): Called with generated key pair
+- **options** (object, optional): Reserved for future configuration
+
+## Returns
+
+A Promise that resolves to a key pair object:
+
+```javascript
+{
+  pub: 'signing_public_key',         // ECDSA public key (x.y format)
+  priv: 'signing_private_key',       // ECDSA private key (d value)
+  epub: 'encryption_public_key',     // ECDH public key (x.y format)
+  epriv: 'encryption_private_key'    // ECDH private key (d value)
+}
+```
+
+## Basic Usage
+
+### With Async/Await
+
+```javascript
+const pair = await SEA.pair();
+
+console.log('Signing public key:', pair.pub);
+console.log('Encryption public key:', pair.epub);
+// Never log private keys in production!
+```
+
+### With Callback
+
+```javascript
+SEA.pair((pair) => {
+  console.log('Generated key pair:', pair.pub);
+});
+```
+
+### With Promises
+
+```javascript
+SEA.pair().then(pair => {
+  console.log('Key pair ready:', pair);
+}).catch(err => {
+  console.error('Failed to generate pair:', err);
+});
+```
+
+## Key Pair Structure
+
+Reference: `~/workspace/source/sea/pair.js:22-62`
+
+### ECDSA Keys (Signing/Verifying)
+
+Used with `SEA.sign()` and `SEA.verify()`:
+
+```javascript
+{
+  pub: 'x.y',   // Public key: JWK x and y coordinates joined by '.'
+  priv: 'd'     // Private key: JWK d value (scalar)
+}
+```
+
+**Algorithm:** ECDSA with P-256 curve (also known as secp256r1 or prime256v1)
+
+### ECDH Keys (Encryption/Decryption)
+
+Used with `SEA.encrypt()`, `SEA.decrypt()`, and `SEA.secret()`:
+
+```javascript
+{
+  epub: 'x.y',   // Public key: JWK x and y coordinates joined by '.'
+  epriv: 'd'     // Private key: JWK d value (scalar)
+}
+```
+
+**Algorithm:** ECDH with P-256 curve
+
+## How It Works
+
+The key generation process:
+
+1. **ECDSA Generation**: Creates a P-256 key pair for signing
+   - Uses Web Crypto API `generateKey()`
+   - Exports to JWK format
+   - Extracts x, y coordinates (public) and d scalar (private)
+
+2. **ECDH Generation**: Creates a P-256 key pair for encryption
+   - Uses Web Crypto API `generateKey()`
+   - Exports to JWK format
+   - Extracts x, y coordinates (public) and d scalar (private)
+
+3. **Key Format**: Combines into single object
+   - Public keys: Base64-encoded x.y format (URL-safe)
+   - Private keys: Base64-encoded d value
+
+Reference: `~/workspace/source/sea/pair.js:23-62`
+
+## Key Format Details
+
+### Public Key Format
+
+Public keys are formatted as `x.y` where:
+- `x` and `y` are elliptic curve point coordinates
+- Both are base64-encoded
+- Separated by `.` (a non-base64 character)
+- URL and filename safe (RFC 3986)
+
+```javascript
+pair.pub  // "Bl8zN..._XyZ.Qa9sT...kLmN"
+pair.epub // "Cd3eF..._GhI.Jk1lM...nOpQ"
+```
+
+### Private Key Format
+
+Private keys are base64-encoded scalar values:
+
+```javascript
+pair.priv  // "AbC1234...XyZ"
+pair.epriv // "DeF5678...UvW"
+```
+
+<Warning>
+  **Never expose private keys!** The `priv` and `epriv` values must be kept secret. Anyone with access to these can impersonate the user, decrypt their data, and sign messages on their behalf.
+</Warning>
+
+## Use Cases
+
+### Creating a New User
+
+```javascript
+const pair = await SEA.pair();
+user.create(pair, 'password123456', (ack) => {
+  console.log('User created with pre-generated keys');
+});
+```
+
+### Bot or Service Account
+
+```javascript
+// Generate once, store securely
+const botPair = await SEA.pair();
+secureStorage.save('bot_keys', botPair);
+
+// Later, authenticate the bot
+const keys = secureStorage.load('bot_keys');
+user.auth(keys);
+```
+
+### Derive Key ID
+
+Generate a PGPv4-compliant key ID:
+
+```javascript
+const pair = await SEA.pair();
+const keyId = await SEA.keyid(pair.pub);
+console.log('Key ID:', keyId);  // 16-character hex string
+```
+
+## Cryptographic Details
+
+### Elliptic Curve: P-256
+
+SEA uses the NIST P-256 curve (secp256r1):
+
+- **Security Level**: 128-bit
+- **Key Size**: 256 bits
+- **Standard**: FIPS 186-4, SEC 2
+- **Also known as**: prime256v1, secp256r1
+
+### Web Crypto API
+
+Key generation uses the native Web Crypto API:
+
+```javascript
+// ECDSA keys
+const ecdsaKeys = await crypto.subtle.generateKey(
+  { name: 'ECDSA', namedCurve: 'P-256' },
+  true,
+  ['sign', 'verify']
+);
+
+// ECDH keys
+const ecdhKeys = await crypto.subtle.generateKey(
+  { name: 'ECDH', namedCurve: 'P-256' },
+  true,
+  ['deriveKey']
+);
+```
+
+### JWK Export Format
+
+Keys are exported as JSON Web Keys (JWK):
+
+```javascript
+{
+  kty: "EC",       // Key Type: Elliptic Curve
+  crv: "P-256",    // Curve: P-256
+  x: "base64...",  // X coordinate
+  y: "base64...",  // Y coordinate
+  d: "base64...",  // Private key (only for private keys)
+  ext: true,       // Extractable
+  key_ops: [...]   // Key operations
+}
+```
+
+## Error Handling
+
+```javascript
+try {
+  const pair = await SEA.pair();
+  console.log('Success:', pair.pub);
+} catch (err) {
+  console.error('Key generation failed:', err);
+  // Possible issues:
+  // - Web Crypto API not available (need HTTPS)
+  // - Browser doesn't support P-256 curve
+  // - Insufficient entropy
+}
+```
+
+## Environment Compatibility
+
+### Browser
+
+Requires Web Crypto API (available in modern browsers over HTTPS):
+
+```javascript
+if (window.crypto && window.crypto.subtle) {
+  const pair = await SEA.pair();
+} else {
+  console.error('Web Crypto API not available');
+}
+```
+
+### Node.js
+
+Uses `@peculiar/webcrypto` polyfill:
+
+```javascript
+// Automatically uses polyfill if native API unavailable
+const pair = await SEA.pair();
+```
+
+Reference: `~/workspace/source/sea/pair.js:21`
+
+<Warning>
+  In some Node.js environments, ECDH key generation may fail if the `@peculiar/webcrypto` package is not installed. SEA will gracefully fall back to ECDSA-only keys in this case.
+</Warning>
+
+## Security Considerations
+
+### Key Storage
+
+**Private keys should be:**
+- Encrypted at rest (use `SEA.encrypt()` with a password)
+- Never transmitted over insecure channels
+- Never logged or exposed in error messages
+- Stored in secure storage (not localStorage)
+
+**Example: Secure Storage**
+
+```javascript
+const pair = await SEA.pair();
+const password = 'user_password_from_secure_input';
+
+// Encrypt private keys before storage
+const encryptedPriv = await SEA.encrypt(pair.priv, password);
+const encryptedEpriv = await SEA.encrypt(pair.epriv, password);
+
+// Store only encrypted versions
+secureStorage.set('encrypted_keys', {
+  pub: pair.pub,
+  epub: pair.epub,
+  priv: encryptedPriv,
+  epriv: encryptedEpriv
+});
+```
+
+### Key Rotation
+
+Consider rotating keys periodically:
+
+```javascript
+const newPair = await SEA.pair();
+
+// Migrate data to new keys
+// Sign with old keys to prove ownership
+// Transition to new keys
+```
+
+### Entropy
+
+Key generation relies on cryptographically secure random number generation. The Web Crypto API ensures sufficient entropy.
+
+## Common Patterns
+
+### Generate Multiple Pairs
+
+```javascript
+const pairs = await Promise.all([
+  SEA.pair(),
+  SEA.pair(),
+  SEA.pair()
+]);
+
+console.log('Generated 3 key pairs');
+```
+
+### Export for Backup
+
+```javascript
+const pair = await SEA.pair();
+
+// User should backup this securely
+const backup = JSON.stringify(pair);
+console.log('Backup your keys (keep this VERY safe):', backup);
+
+// Later, import from backup
+const restoredPair = JSON.parse(backup);
+user.auth(restoredPair);
+```
+
+### Share Public Keys Only
+
+```javascript
+const pair = await SEA.pair();
+
+// Safe to share publicly
+const publicInfo = {
+  pub: pair.pub,
+  epub: pair.epub
+};
+
+gun.get('users').get(username).put(publicInfo);
+```
+
+## Performance
+
+Key generation is computationally intensive:
+
+- **Time**: ~10-50ms per pair (varies by device)
+- **Async**: Always use async/await or callbacks
+- **Caching**: Generate once, reuse the pair
+
+```javascript
+// Don't do this (generates new keys every time)
+setInterval(async () => {
+  const pair = await SEA.pair();  // Wasteful!
+}, 1000);
+
+// Do this instead (generate once)
+const pair = await SEA.pair();
+setInterval(() => {
+  useExistingPair(pair);  // Efficient
+}, 1000);
+```

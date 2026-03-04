@@ -1,0 +1,186 @@
+---
+title: Introduction to GUN
+description: Learn about GUN, a realtime, decentralized, offline-first graph database with peer-to-peer synchronization
+---
+
+GUN is an ecosystem of tools that let you build community-run and encrypted applications - like an open source Firebase or a decentralized Dropbox.
+
+<img src="https://gun.eco/see/demo.gif" alt="GUN Demo" />
+
+## What is GUN?
+
+GUN is a **graph synchronization protocol** with a lightweight embedded engine, capable of doing 20M+ API ops/sec in just ~9KB gzipped size. The Internet Archive and hundreds of other apps run GUN in production, processing terabytes of daily P2P traffic.
+
+<Info>
+GUN was created by Mark Nadal in 2014 after spending 4 years trying to get collaborative web apps to scale with traditional databases. The goal was to build a P2P database that could survive inside any browser and correctly sync data between any device after any offline-first activity.
+</Info>
+
+## Key features
+
+GUN provides several powerful capabilities that make it unique:
+
+<CardGroup cols={2}>
+  <Card title="Realtime synchronization" icon="rotate">
+    Multiplayer by default with realtime peer-to-peer state synchronization across all connected devices
+  </Card>
+  
+  <Card title="Graph data structure" icon="diagram-project">
+    Use key/value pairs, tables, documents, videos, and more - all in a flexible graph structure
+  </Card>
+  
+  <Card title="Offline-first" icon="wifi-slash">
+    Local-first architecture with offline support and automatic synchronization when reconnected
+  </Card>
+  
+  <Card title="Decentralized" icon="network-wired">
+    No master servers, no single source of truth - data syncs peer-to-peer with end-to-end encryption
+  </Card>
+</CardGroup>
+
+## How GUN works
+
+Unlike traditional master-slave database architectures that create bottlenecks, GUN operates as a distributed graph database:
+
+- **No master** - No servers, no "single source of truth"
+- **All data types** - Not just SQL or NoSQL, but graphs, documents, tables, and key/value
+- **Offline-first** - Works in any browser and syncs correctly after offline activity
+- **Conflict resolution** - Uses CRDT algorithms to handle concurrent updates
+- **Modular stack** - Includes cryptographic security, storage serialization, mesh networking, and more
+
+<img src="https://gun.eco/see/stack.png" alt="GUN Stack" width="48%" />
+<img src="https://gun.eco/see/layers.png" alt="GUN Layers" width="48%" />
+
+## Use cases
+
+GUN powers decentralized alternatives to many popular services:
+
+<CardGroup cols={3}>
+  <Card title="Chat applications" icon="comments">
+    Real-time messaging with offline support
+  </Card>
+  
+  <Card title="Collaborative tools" icon="users">
+    Shared documents and workspaces
+  </Card>
+  
+  <Card title="Social networks" icon="share-nodes">
+    Decentralized social platforms like Iris
+  </Card>
+  
+  <Card title="Video conferencing" icon="video">
+    P2P video calls like Meething
+  </Card>
+  
+  <Card title="IoT devices" icon="microchip">
+    Distributed sensor networks
+  </Card>
+  
+  <Card title="Gaming" icon="gamepad">
+    Multiplayer games with P2P sync
+  </Card>
+</CardGroup>
+
+## Example: Basic data operations
+
+Here's a quick example showing GUN's simplicity:
+
+```javascript
+// Initialize GUN
+gun = GUN();
+
+// Store data
+gun.get('mark').put({
+  name: "Mark",
+  email: "mark@gun.eco",
+});
+
+// Subscribe to realtime updates
+gun.get('mark').on((data, key) => {
+  console.log("realtime updates:", data);
+});
+
+// Update data continuously
+setInterval(() => { 
+  gun.get('mark').get('live').put(Math.random()) 
+}, 9);
+```
+
+## Example: Graph relationships
+
+GUN handles circular references and graph traversal naturally:
+
+```javascript
+cat = {name: "Fluffy", species: "kitty"};
+mark = {boss: cat};
+cat.slave = mark;
+
+// Partial updates merge with existing data!
+gun.get('mark').put(mark);
+
+// Access data as if it is a document
+gun.get('mark').get('boss').get('name').once(function(data, key){
+  console.log("Mark's boss is", data);
+});
+
+// Traverse a graph of circular references!
+gun.get('mark').get('boss').get('slave').once(function(data, key){
+  console.log("Mark is the cat's slave!", data);
+});
+
+// Add both to a table!
+gun.get('list').set(gun.get('mark').get('boss'));
+gun.get('list').set(gun.get('mark'));
+
+// Grab each item from the table, continuously:
+gun.get('list').map().once(function(data, key){
+  console.log("Item:", data);
+});
+```
+
+<Tip>
+Try these examples live in the [JSBin playground](https://jsbin.com/kadobamevo/edit?js,console) or explore the [interactive tutorial](https://gun.eco/docs/Todo-Dapp).
+</Tip>
+
+## The NoDB philosophy
+
+GUN challenges traditional database conventions:
+
+- **No master-slave architecture** - Eliminates single points of failure
+- **No DevOps required** - Runs anywhere JavaScript runs
+- **No locking** - CRDT-based conflict resolution
+- **No language barriers** - Built for the web, works everywhere
+
+<img src="https://gun.eco/see/compare.png" alt="Database Comparison" />
+
+## Community and ecosystem
+
+GUN is built by a friendly community of developers creating a free, fun future. The ecosystem includes:
+
+- **[SEA (Security, Encryption, Authorization)](https://gun.eco/docs/SEA)** - Cryptographic security and user authentication
+- **[AXE](https://gun.eco/docs/DAM)** - Mesh networking and routing algorithms
+- **[RAD](https://gun.eco/docs/RAD)** - Radix storage serialization
+- **Modules** - GraphQL, Vue, React, Svelte, Angular integrations and more
+
+<CardGroup cols={2}>
+  <Card title="Join the chat" icon="comments" href="http://chat.gun.eco">
+    Get help from the friendly GUN community
+  </Card>
+  
+  <Card title="View examples" icon="code" href="https://github.com/amark/gun/tree/master/examples">
+    Explore real-world GUN applications
+  </Card>
+</CardGroup>
+
+## Next steps
+
+Ready to start building with GUN?
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running in 5 minutes
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Install GUN for your platform
+  </Card>
+</CardGroup>

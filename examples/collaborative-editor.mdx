@@ -1,0 +1,607 @@
+---
+title: Build a Collaborative Text Editor
+description: Create a Google Docs-style collaborative text editor with real-time sync and conflict resolution
+---
+
+# Build a Collaborative Text Editor
+
+Learn how to build a real-time collaborative text editor like Google Docs using GUN. This guide covers real-time synchronization, conflict resolution, and handling concurrent edits.
+
+## What You'll Build
+
+- Real-time text synchronization
+- Multi-user editing
+- Conflict-free updates
+- Auto-save functionality
+- Document persistence
+- Offline editing with sync
+
+## Minimal Note Editor
+
+Here's the simplest collaborative editor in just 9 lines:
+
+```html
+<!DOCTYPE html>
+<style>html, body, textarea { 
+  width: 100%; height: 100%; padding: 0; margin: 0; 
+}</style>
+<textarea id="view" placeholder="write here..."></textarea>
+<script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+<script>
+  gun = GUN();
+  note = gun.get('note').get(location.hash.replace('#','') || 1);
+  view.oninput = () => { note.put(view.value) };
+  note.on((data) => { view.value = data });
+</script>
+```
+
+### Try It Out
+
+1. Save as `editor.html` and open in browser
+2. Open the same file in another window
+3. Type in one window, see it appear in the other!
+4. Add `#room1` to URL to create different documents
+
+## Full-Featured Editor
+
+Here's a complete editor with better UX:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Collaborative Editor</title>
+  <meta charset="UTF-8">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+    }
+    
+    .header {
+      background: white;
+      padding: 15px 20px;
+      border-bottom: 1px solid #ddd;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .header h1 {
+      font-size: 20px;
+      color: #333;
+    }
+    
+    .status {
+      font-size: 14px;
+      color: #666;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4CAF50;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .editor-container {
+      max-width: 900px;
+      margin: 40px auto;
+      background: white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    
+    .toolbar {
+      background: #f9f9f9;
+      border-bottom: 1px solid #ddd;
+      padding: 10px 20px;
+      display: flex;
+      gap: 10px;
+    }
+    
+    .toolbar button {
+      padding: 8px 16px;
+      border: 1px solid #ddd;
+      background: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    
+    .toolbar button:hover {
+      background: #f0f0f0;
+    }
+    
+    #editor {
+      width: 100%;
+      min-height: 500px;
+      padding: 40px;
+      border: none;
+      font-size: 16px;
+      line-height: 1.6;
+      font-family: Georgia, serif;
+      resize: vertical;
+      outline: none;
+    }
+    
+    .footer {
+      padding: 10px 20px;
+      background: #f9f9f9;
+      border-top: 1px solid #ddd;
+      font-size: 12px;
+      color: #666;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1 id="doc-title">Untitled Document</h1>
+    <div class="status">
+      <span class="status-dot"></span>
+      <span>Synced</span>
+    </div>
+  </div>
+  
+  <div class="editor-container">
+    <div class="toolbar">
+      <button onclick="document.execCommand('bold')"><b>B</b></button>
+      <button onclick="document.execCommand('italic')"><i>I</i></button>
+      <button onclick="document.execCommand('underline')"><u>U</u></button>
+      <button onclick="clearDocument()">Clear</button>
+      <button onclick="exportDocument()">Export</button>
+    </div>
+    
+    <textarea id="editor" placeholder="Start typing..."></textarea>
+    
+    <div class="footer">
+      <span id="word-count">0 words</span> · 
+      <span id="char-count">0 characters</span>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+  <script>
+    // Initialize GUN
+    const gun = GUN([
+      'http://localhost:8765/gun',
+      'https://gun-manhattan.herokuapp.com/gun'
+    ]);
+    
+    // Get document reference from URL hash
+    const docId = location.hash.slice(1) || 'default';
+    const doc = gun.get('docs').get(docId);
+    
+    // Get editor element
+    const editor = document.getElementById('editor');
+    const docTitle = document.getElementById('doc-title');
+    const wordCount = document.getElementById('word-count');
+    const charCount = document.getElementById('char-count');
+    
+    // Update document title
+    docTitle.textContent = `Document: ${docId}`;
+    
+    // Debounce function to avoid too many updates
+    let saveTimeout;
+    function debouncedSave(value) {
+      clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(() => {
+        doc.get('content').put(value);
+        doc.get('lastModified').put(Date.now());
+      }, 300);
+    }
+    
+    // Handle local edits
+    let isRemoteUpdate = false;
+    editor.addEventListener('input', () => {
+      if (isRemoteUpdate) return;
+      
+      const content = editor.value;
+      debouncedSave(content);
+      updateStats(content);
+    });
+    
+    // Listen for remote updates
+    doc.get('content').on((content) => {
+      if (content === undefined || content === null) return;
+      
+      // Only update if content changed and not from this editor
+      if (editor.value !== content) {
+        // Preserve cursor position
+        const start = editor.selectionStart;
+        const end = editor.selectionEnd;
+        
+        isRemoteUpdate = true;
+        editor.value = content;
+        
+        // Restore cursor position
+        editor.setSelectionRange(start, end);
+        
+        isRemoteUpdate = false;
+        updateStats(content);
+      }
+    });
+    
+    // Update word and character count
+    function updateStats(text) {
+      const words = text.trim().split(/\s+/).filter(w => w.length > 0).length;
+      const chars = text.length;
+      
+      wordCount.textContent = `${words} word${words !== 1 ? 's' : ''}`;
+      charCount.textContent = `${chars} character${chars !== 1 ? 's' : ''}`;
+    }
+    
+    // Clear document
+    function clearDocument() {
+      if (confirm('Clear all content?')) {
+        editor.value = '';
+        doc.get('content').put('');
+      }
+    }
+    
+    // Export document
+    function exportDocument() {
+      const content = editor.value;
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${docId}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+    
+    // Auto-focus editor
+    editor.focus();
+  </script>
+</body>
+</html>
+```
+
+## Rich Text Editor
+
+Here's an example using ContentEditable for rich text:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Rich Text Editor</title>
+  <style>
+    #editor {
+      border: 1px solid #ccc;
+      min-height: 400px;
+      padding: 20px;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+    
+    .toolbar button {
+      margin: 5px;
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button onclick="format('bold')"><b>Bold</b></button>
+    <button onclick="format('italic')"><i>Italic</i></button>
+    <button onclick="format('underline')"><u>Underline</u></button>
+    <button onclick="format('insertUnorderedList')">• List</button>
+    <button onclick="format('insertOrderedList')">1. List</button>
+    <select onchange="format('formatBlock', this.value); this.value=''">
+      <option value="">Format</option>
+      <option value="h1">Heading 1</option>
+      <option value="h2">Heading 2</option>
+      <option value="p">Paragraph</option>
+    </select>
+  </div>
+  
+  <div id="editor" contenteditable="true"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+  <script>
+    const gun = GUN();
+    const docId = location.hash.slice(1) || 'default';
+    const doc = gun.get('rich-docs').get(docId);
+    const editor = document.getElementById('editor');
+    
+    let saveTimeout;
+    let isRemoteUpdate = false;
+    
+    // Format text
+    function format(command, value = null) {
+      document.execCommand(command, false, value);
+      editor.focus();
+    }
+    
+    // Save content
+    function saveContent() {
+      if (isRemoteUpdate) return;
+      
+      clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(() => {
+        doc.get('html').put(editor.innerHTML);
+      }, 500);
+    }
+    
+    // Listen for input
+    editor.addEventListener('input', saveContent);
+    editor.addEventListener('paste', (e) => {
+      // Clean pasted content
+      e.preventDefault();
+      const text = e.clipboardData.getData('text/plain');
+      document.execCommand('insertText', false, text);
+    });
+    
+    // Load content
+    doc.get('html').on((html) => {
+      if (html && editor.innerHTML !== html) {
+        isRemoteUpdate = true;
+        editor.innerHTML = html;
+        isRemoteUpdate = false;
+      }
+    });
+  </script>
+</body>
+</html>
+```
+
+## Conflict Resolution
+
+### Operational Transformation (OT)
+
+For more sophisticated conflict resolution:
+
+```javascript
+// Track document version
+let localVersion = 0;
+let remoteVersion = 0;
+
+// Store pending operations
+const pendingOps = [];
+
+// Handle local change
+editor.addEventListener('input', (e) => {
+  const op = {
+    type: 'insert',
+    position: editor.selectionStart,
+    text: e.data,
+    version: localVersion++
+  };
+  
+  pendingOps.push(op);
+  doc.get('ops').set(op);
+});
+
+// Handle remote operations
+doc.get('ops').map().on((op, id) => {
+  if (op.version <= remoteVersion) return;
+  
+  // Transform against pending operations
+  const transformed = transformOp(op, pendingOps);
+  applyOp(transformed);
+  
+  remoteVersion = op.version;
+});
+
+function transformOp(op, pending) {
+  // Simplified transformation
+  let newOp = { ...op };
+  
+  pending.forEach(localOp => {
+    if (localOp.position <= newOp.position) {
+      newOp.position += localOp.text.length;
+    }
+  });
+  
+  return newOp;
+}
+
+function applyOp(op) {
+  const content = editor.value;
+  const newContent = 
+    content.slice(0, op.position) + 
+    op.text + 
+    content.slice(op.position);
+  
+  editor.value = newContent;
+}
+```
+
+### Character-by-Character Sync
+
+For fine-grained synchronization:
+
+```javascript
+// Split document into characters
+function syncDocument() {
+  const content = editor.value;
+  const docChars = gun.get('doc-' + docId).get('chars');
+  
+  content.split('').forEach((char, index) => {
+    docChars.get(index).put(char);
+  });
+  
+  // Store length
+  docChars.get('length').put(content.length);
+}
+
+// Reconstruct document
+function loadDocument() {
+  const docChars = gun.get('doc-' + docId).get('chars');
+  
+  docChars.get('length').once((length) => {
+    if (!length) return;
+    
+    let content = '';
+    let loaded = 0;
+    
+    for (let i = 0; i < length; i++) {
+      docChars.get(i).once((char) => {
+        content += char || '';
+        loaded++;
+        
+        if (loaded === length) {
+          editor.value = content;
+        }
+      });
+    }
+  });
+}
+```
+
+## Advanced Features
+
+### Cursor Position Sync
+
+```javascript
+// Share cursor positions
+const cursors = gun.get('cursors-' + docId);
+const userId = 'user-' + Math.random().toString(36).substr(2, 9);
+
+editor.addEventListener('click', updateCursor);
+editor.addEventListener('keyup', updateCursor);
+
+function updateCursor() {
+  cursors.get(userId).put({
+    position: editor.selectionStart,
+    color: '#' + Math.random().toString(16).substr(2, 6),
+    timestamp: Date.now()
+  });
+}
+
+// Show other cursors
+cursors.map().on((cursor, id) => {
+  if (id === userId) return;
+  
+  // Show cursor indicator in UI
+  showCursorIndicator(cursor);
+});
+```
+
+### Version History
+
+```javascript
+// Save versions
+let versionNum = 0;
+
+function saveVersion() {
+  const version = {
+    content: editor.value,
+    timestamp: Date.now(),
+    author: currentUser,
+    number: versionNum++
+  };
+  
+  doc.get('versions').get(version.number).put(version);
+}
+
+// Load version
+function loadVersion(versionNum) {
+  doc.get('versions').get(versionNum).once((version) => {
+    if (version) {
+      editor.value = version.content;
+    }
+  });
+}
+
+// Auto-save every 30 seconds
+setInterval(saveVersion, 30000);
+```
+
+### Presence Indicators
+
+```javascript
+// Track active users
+const presence = gun.get('presence-' + docId);
+const userId = sessionStorage.getItem('userId') || 
+               Math.random().toString(36).substr(2, 9);
+
+sessionStorage.setItem('userId', userId);
+
+// Update presence
+function updatePresence() {
+  presence.get(userId).put({
+    name: userName,
+    color: userColor,
+    lastSeen: Date.now(),
+    active: true
+  });
+}
+
+// Send heartbeat
+setInterval(updatePresence, 5000);
+updatePresence();
+
+// Show active users
+presence.map().on((user, id) => {
+  if (!user || !user.active) return;
+  
+  // Remove if inactive for 15 seconds
+  if (Date.now() - user.lastSeen > 15000) {
+    presence.get(id).get('active').put(false);
+    return;
+  }
+  
+  // Show in UI
+  showActiveUser(user);
+});
+
+// Clean up on close
+window.addEventListener('beforeunload', () => {
+  presence.get(userId).get('active').put(false);
+});
+```
+
+## Best Practices
+
+1. **Debounce updates** - Don't save on every keystroke
+2. **Preserve cursor position** - Maintain UX during remote updates
+3. **Handle conflicts** - Use timestamps or version numbers
+4. **Show sync status** - Let users know when changes are saved
+5. **Implement auto-save** - Don't rely on manual saves
+6. **Add presence** - Show who's currently editing
+
+## Performance Tips
+
+- Use debouncing to reduce network traffic
+- Consider delta compression for large documents
+- Implement lazy loading for very long documents
+- Cache content locally for instant load
+- Use worker threads for complex transformations
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Chat App" icon="comments" href="/examples/chat-app">
+    Build a real-time chat application
+  </Card>
+  <Card title="User Authentication" icon="lock" href="/sea/auth">
+    Add user accounts and permissions
+  </Card>
+  <Card title="Conflict Resolution" icon="code-merge" href="/advanced/conflict-resolution">
+    Deep dive into conflict handling
+  </Card>
+  <Card title="P2P Networking" icon="network-wired" href="/examples/p2p-networking">
+    Understand mesh networking
+  </Card>
+</CardGroup>

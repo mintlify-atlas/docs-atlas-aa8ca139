@@ -1,0 +1,299 @@
+---
+title: 'User API'
+description: 'User authentication and management in GUN SEA'
+---
+
+# User API
+
+The User API provides methods for creating, authenticating, and managing user accounts in GUN. Each user is identified by a cryptographic key pair.
+
+## gun.user()
+
+Get or create a user context. Only one user can be authenticated per GUN instance.
+
+```javascript
+const gun = Gun();
+const user = gun.user();
+```
+
+### Get User by Public Key
+
+```javascript
+// Access another user's public data
+const alice = gun.user('alice_public_key');
+alice.get('profile').once(data => {
+  console.log(data);
+});
+```
+
+## user.create()
+
+Create a new user account with an alias (username) and password.
+
+### Syntax
+
+```javascript
+user.create(alias, password, callback, options)
+user.create(pair, callback, options)
+```
+
+### Parameters
+
+- **alias** (string): Username for the account
+- **password** (string): Password (minimum 8 characters)
+- **pair** (object): Optional pre-generated key pair
+- **callback** (function): Called when creation completes
+- **options** (object): Optional configuration
+  - `check`: Validate alias and password (default: true)
+  - `already`: Allow creating if alias exists (default: false)
+
+### Example
+
+```javascript
+const gun = Gun();
+const user = gun.user();
+
+user.create('alice', 'SecurePass123', (ack) => {
+  if (ack.err) {
+    console.error('Error:', ack.err);
+    // Possible errors:
+    // "No user." - No alias provided
+    // "Password too short!" - Less than 8 characters
+    // "User already created!" - Alias already exists
+  } else {
+    console.log('User created!', ack.pub);
+    // ack.ok = 0 (not waiting for disk acknowledgment)
+    // ack.pub = user's public key
+  }
+});
+```
+
+### How It Works
+
+1. **Validation**: Checks alias exists and password is 8+ characters
+2. **Salt Generation**: Creates a random 64-character salt
+3. **Proof of Work**: Uses `SEA.work()` to derive a key from password + salt (PBKDF2, 100,000 iterations)
+4. **Key Pair Generation**: Creates ECDSA and ECDH key pairs via `SEA.pair()`
+5. **Encryption**: Encrypts private keys with the proof-of-work result
+6. **Storage**: Saves user data at `~@alias` and `~publicKey` nodes
+
+### User Data Structure
+
+Reference: `~/workspace/source/sea/create.js:56-74`
+
+```javascript
+{
+  pub: 'user_public_signing_key',
+  epub: 'user_public_encryption_key',
+  alias: 'alice',
+  auth: {
+    ek: 'encrypted_private_keys',  // AES-GCM encrypted
+    s: 'random_salt'                // 64-char random salt
+  }
+}
+```
+
+### Using Pre-generated Key Pairs
+
+```javascript
+const pair = await SEA.pair();
+user.create(pair, 'password123456', (ack) => {
+  console.log('User created with existing pair');
+});
+```
+
+### Auto-login After Creation
+
+If no callback is provided, the user is automatically authenticated:
+
+```javascript
+user.create('bob', 'MyPassword99');
+// User is automatically logged in
+```
+
+## user.auth()
+
+Authenticate an existing user with alias and password, or with a key pair.
+
+### Syntax
+
+```javascript
+user.auth(alias, password, callback, options)
+user.auth(pair, callback, options)
+```
+
+### Parameters
+
+- **alias** (string): Username
+- **password** (string): User password
+- **pair** (object): Key pair object with `pub`, `priv`, `epub`, `epriv`
+- **callback** (function): Called after authentication
+- **options** (object):
+  - `retries`: Number of retry attempts (default: 9)
+  - `remember`: Store credentials in sessionStorage (default: false)
+  - `change`: New password for password update
+
+### Example with Alias/Password
+
+```javascript
+user.auth('alice', 'SecurePass123', (ack) => {
+  if (ack.err) {
+    console.error('Auth failed:', ack.err);
+    // Possible errors:
+    // "Wrong user or password."
+    // "User cannot be found!"
+  } else {
+    console.log('Authenticated!', ack.sea);
+    // ack contains the user's SEA credentials
+  }
+});
+```
+
+### Example with Key Pair
+
+Authentication with a key pair is more reliable:
+
+```javascript
+const pair = {
+  pub: 'public_key',
+  priv: 'private_key',
+  epub: 'encryption_public_key',
+  epriv: 'encryption_private_key'
+};
+
+user.auth(pair, (ack) => {
+  console.log('Authenticated with keypair');
+});
+```
+
+### Session Management
+
+```javascript
+// Remember user in sessionStorage
+user.auth('alice', 'password', (ack) => {
+  console.log('Session stored');
+}, { remember: true });
+
+// Later, recall the session
+user.recall({ sessionStorage: true });
+```
+
+### Password Change
+
+```javascript
+user.auth('alice', 'OldPassword123', (ack) => {
+  console.log('Password updated!');
+}, { change: 'NewPassword456' });
+```
+
+## user.leave()
+
+Log out the current user and clear session data.
+
+### Syntax
+
+```javascript
+user.leave(options, callback)
+```
+
+### Example
+
+```javascript
+user.leave();
+
+// Session cleared:
+// - user.is deleted
+// - user._.sea deleted
+// - sessionStorage.recall deleted
+// - sessionStorage.pair deleted
+```
+
+## user.recall()
+
+Restore a previously authenticated session from sessionStorage.
+
+### Syntax
+
+```javascript
+user.recall(options, callback)
+```
+
+### Example
+
+```javascript
+const gun = Gun();
+const user = gun.user().recall({ sessionStorage: true });
+
+// User is auto-authenticated if session exists
+gun.on('auth', () => {
+  console.log('User restored from session');
+});
+```
+
+## user.is
+
+Check if a user is currently authenticated.
+
+### Example
+
+```javascript
+if (user.is) {
+  console.log('User is logged in:', user.is.alias);
+  console.log('Public key:', user.is.pub);
+  console.log('Encryption key:', user.is.epub);
+} else {
+  console.log('No user authenticated');
+}
+```
+
+## Authentication Flow
+
+Reference: `~/workspace/source/sea/auth.js:43-65`
+
+The authentication process:
+
+1. **Lookup**: Find user data at `~@alias`
+2. **Parse Auth**: Extract encrypted credentials from `auth.ek` and `auth.s`
+3. **Proof of Work**: Derive key from password + salt (PBKDF2)
+4. **Decrypt**: Decrypt private keys using the derived key
+5. **Validate**: Reconstruct key pair and verify
+6. **Session**: Store credentials in memory and optionally in sessionStorage
+7. **Event**: Emit 'auth' event on successful authentication
+
+<Warning>
+  Private keys are encrypted with AES-GCM using a PBKDF2-derived key from your password. Never share your password or private keys. They cannot be recovered if lost.
+</Warning>
+
+## Security Notes
+
+- Passwords must be at least 8 characters
+- Private keys are never stored in plaintext
+- PBKDF2 with 100,000 iterations protects against brute force
+- Session data is only stored if `remember` option is enabled
+- Authentication uses constant-time comparisons where possible
+
+## Common Patterns
+
+### Registration + Auto-login
+
+```javascript
+user.create('newuser', 'password123456');
+// No callback = auto-login after creation
+```
+
+### Check Auth Status
+
+```javascript
+if (user.is) {
+  // User is authenticated
+  user.get('profile').put({ status: 'online' });
+}
+```
+
+### Handle Auth Events
+
+```javascript
+gun.on('auth', (ack) => {
+  console.log('User authenticated:', ack.sea.pub);
+});
+```

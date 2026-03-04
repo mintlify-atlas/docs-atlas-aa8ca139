@@ -1,122 +1,123 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "GUN",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#1a73e8",
+    "light": "#4285f4",
+    "dark": "#0d47a1"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/amark/gun"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/amark/gun"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/graph-database",
+              "concepts/decentralization",
+              "concepts/realtime-sync",
+              "concepts/offline-first",
+              "concepts/crdt"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "API Reference",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "api/gun-constructor",
+              "api/get",
+              "api/put",
+              "api/on",
+              "api/once",
+              "api/set",
+              "api/map",
+              "api/val",
+              "api/back"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Security (SEA)",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "sea/overview",
+              "sea/user",
+              "sea/auth",
+              "sea/pair",
+              "sea/encrypt",
+              "sea/decrypt",
+              "sea/sign",
+              "sea/verify",
+              "sea/certify",
+              "sea/work"
+            ]
+          },
+          {
+            "group": "Storage Adapters",
+            "pages": [
+              "storage/overview",
+              "storage/radisk",
+              "storage/rindexed",
+              "storage/s3",
+              "storage/custom-adapters"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/networking",
+              "advanced/conflict-resolution",
+              "advanced/performance",
+              "advanced/cap-theorem",
+              "advanced/deployment"
+            ]
+          },
+          {
+            "group": "Integration Guides",
+            "pages": [
+              "integrations/react",
+              "integrations/react-native",
+              "integrations/vue",
+              "integrations/angular",
+              "integrations/nodejs",
+              "integrations/electron"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Examples",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Examples",
             "pages": [
-              "api-reference/introduction"
-            ]
-          },
-          {
-            "group": "Endpoint examples",
-            "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "examples/overview",
+              "examples/chat-app",
+              "examples/todo-app",
+              "examples/collaborative-editor",
+              "examples/p2p-networking"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

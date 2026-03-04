@@ -1,0 +1,151 @@
+---
+title: '.get()'
+description: 'Navigate to a node by key or query data with a callback'
+---
+
+## .get()
+
+The `.get()` method retrieves data from the graph. It can navigate to a specific node by key, or when passed a callback function, it becomes a query that filters data.
+
+### Signature
+
+```javascript
+gun.get(key)
+gun.get(key, callback)
+gun.get(callback, options)
+```
+
+### Parameters
+
+<ParamField path="key" type="string | number">
+  The property key to navigate to. Can be a node soul (for root chains) or a property name (for nested chains).
+  
+  **Note:** Empty strings (`''`) are not valid keys and will return an error.
+</ParamField>
+
+<ParamField path="callback" type="function">
+  When provided as the first argument, acts as a filter/query function that processes incoming data.
+  
+  **Signature:** `function(data, key, message, event)`
+  
+  - `data` - The data at this node
+  - `key` - The property key
+  - `message` - The full message object
+  - `event` - Event control object with `.off()` method
+</ParamField>
+
+<ParamField path="options" type="object">
+  Options for query behavior
+  
+  <Expandable title="properties">
+    <ParamField path="change" type="boolean">
+      Only trigger callback on changes to the data
+    </ParamField>
+    
+    <ParamField path="v2020" type="boolean">
+      Use 2020 API format for callbacks
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Return Value
+
+Returns a new GUN chain reference pointing to the specified key. This allows method chaining.
+
+### Examples
+
+#### Navigate by Key
+
+```javascript
+// Navigate to a node by soul
+var user = gun.get('user/alice')
+
+// Navigate to nested properties
+var name = gun.get('user/alice').get('name')
+
+// Chain multiple gets
+var color = gun.get('users').get('alice').get('car').get('color')
+```
+
+#### Numeric Keys
+
+```javascript
+// Numeric keys are converted to strings
+var item = gun.get('items').get(42)
+// Equivalent to: gun.get('items').get('42')
+```
+
+#### Query with Callback
+
+```javascript
+// Filter data with a callback
+gun.get('messages').map().get(function(message, id, msg, event){
+  // Only process messages from Alice
+  if(message.from === 'alice'){
+    console.log('Message from Alice:', message.text)
+  }
+  // Return the data to pass it down the chain
+  return message
+})
+```
+
+#### Error Handling
+
+```javascript
+// Invalid key length
+var ref = gun.get('')
+ref.on(function(data){
+  // Will receive an error: "0 length key!"
+})
+
+// Invalid key type
+var ref = gun.get(null)
+ref.on(function(data){
+  // Will receive an error: "Invalid get request!"
+})
+```
+
+### Implementation Details
+
+From the source code (get.js:4-107):
+
+```javascript
+Gun.chain.get = function(key, cb, as){
+  var gun, tmp;
+  if(typeof key === 'string'){
+    if(key.length == 0) {
+      (gun = this.chain())._.err = {err: Gun.log('0 length key!', key)};
+      if(cb){ cb.call(gun, gun._.err) }
+      return gun;
+    }
+    var back = this, cat = back._;
+    var next = cat.next || empty;
+    if(!(gun = next[key])){
+      gun = key && cache(key, back);
+    }
+    gun = gun && gun.$;
+  }
+  // ... callback and numeric key handling
+}
+```
+
+The `.get()` method:
+1. Validates the key (non-empty string or number)
+2. Creates or retrieves a cached chain reference
+3. For callbacks, sets up query filtering on incoming data
+4. Returns a chainable reference for further operations
+
+### Caching Behavior
+
+GUN caches chain references internally:
+- Multiple calls to `.get('key')` return the same chain reference
+- Cached chains share the same data and listeners
+- This improves performance and ensures consistency
+
+### Notes
+
+- `.get()` is synchronous and returns immediately
+- The actual data is loaded asynchronously
+- Use `.on()` or `.once()` to access the loaded data
+- You can chain multiple `.get()` calls to traverse nested objects
+- When used with callbacks, it becomes a powerful query mechanism

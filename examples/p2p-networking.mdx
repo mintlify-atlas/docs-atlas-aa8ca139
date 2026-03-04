@@ -1,0 +1,620 @@
+---
+title: P2P Networking with GUN
+description: Build peer-to-peer mesh networks with GUN - relay servers, peer discovery, and distributed architecture
+---
+
+# P2P Networking with GUN
+
+Learn how to build peer-to-peer mesh networks with GUN. This guide covers relay servers, peer discovery, WebRTC connections, and distributed architecture patterns.
+
+## Understanding GUN's Network Architecture
+
+GUN uses a **mesh network topology** where:
+
+- Peers connect directly to each other
+- Data syncs automatically across all peers
+- No single point of failure
+- Works offline with automatic sync when reconnected
+- Optional relay servers for peer discovery
+
+### Network Topology
+
+```
+     Peer A ←→ Peer B
+        ↕         ↕
+    Relay    ←→  Peer C
+        ↕         ↕
+     Peer D ←→ Peer E
+```
+
+## Setting Up a Basic P2P Network
+
+### Client-Side Only (Browser-to-Browser)
+
+Simplest setup using public relay servers:
+
+```javascript
+// Connect to public relay servers
+const gun = Gun([
+  'https://gun-manhattan.herokuapp.com/gun',
+  'https://gun-us.herokuapp.com/gun'
+]);
+
+// All peers using these relays will sync automatically
+const app = gun.get('myapp');
+```
+
+### With Local Relay Server
+
+For better control and performance:
+
+```javascript
+// Client connects to local relay
+const gun = Gun([
+  'http://localhost:8765/gun',
+  'https://gun-manhattan.herokuapp.com/gun' // fallback
+]);
+```
+
+## Building a Relay Server
+
+### Simple HTTP Relay
+
+Basic relay server using Node.js:
+
+```javascript
+// server.js
+const Gun = require('gun');
+const http = require('http');
+
+const port = process.env.PORT || 8765;
+
+// Create HTTP server
+const server = http.createServer();
+
+// Attach GUN
+const gun = Gun({
+  web: server,
+  file: 'data' // persist to disk
+});
+
+server.listen(port, () => {
+  console.log('GUN relay server started on port', port);
+});
+
+module.exports = gun;
+```
+
+Run it:
+
+```bash
+node server.js
+```
+
+### Express.js Integration
+
+Integrate with an existing Express app:
+
+```javascript
+// express-server.js
+const express = require('express');
+const Gun = require('gun');
+
+const app = express();
+const port = process.env.PORT || 8765;
+
+// Serve GUN
+app.use(Gun.serve);
+
+// Serve static files
+app.use(express.static(__dirname + '/public'));
+
+// Create server
+const server = app.listen(port, () => {
+  console.log('Server started on port', port);
+});
+
+// Attach GUN
+const gun = Gun({
+  web: server,
+  file: 'data',
+  peers: [
+    'https://gun-manhattan.herokuapp.com/gun'
+  ]
+});
+
+console.log('Relay peer started on port ' + port + ' with /gun');
+```
+
+### Production Relay with Clustering
+
+High-availability relay with clustering:
+
+```javascript
+// production-relay.js
+const cluster = require('cluster');
+const os = require('os');
+
+if (cluster.isMaster) {
+  // Fork workers
+  const numCPUs = os.cpus().length;
+  console.log(`Master process starting ${numCPUs} workers`);
+  
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
+  }
+  
+  // Restart dead workers
+  cluster.on('exit', (worker) => {
+    console.log(`Worker ${worker.process.pid} died, restarting...`);
+    cluster.fork();
+  });
+} else {
+  // Worker process
+  const Gun = require('gun');
+  const http = require('http');
+  const fs = require('fs');
+  
+  const env = process.env;
+  const opt = {
+    port: env.PORT || 8765,
+    peers: env.PEERS ? env.PEERS.split(',') : []
+  };
+  
+  // HTTPS support
+  if (env.HTTPS_KEY && fs.existsSync(env.HTTPS_KEY)) {
+    opt.key = fs.readFileSync(env.HTTPS_KEY);
+    opt.cert = fs.readFileSync(env.HTTPS_CERT);
+    opt.server = require('https').createServer(opt, Gun.serve());
+    
+    // Redirect HTTP to HTTPS
+    require('http').createServer((req, res) => {
+      res.writeHead(301, {
+        "Location": "https://" + req.headers['host'] + req.url
+      });
+      res.end();
+    }).listen(80);
+  } else {
+    opt.server = http.createServer(Gun.serve());
+  }
+  
+  // Start GUN
+  const gun = Gun({
+    web: opt.server.listen(opt.port),
+    peers: opt.peers,
+    file: `data-${cluster.worker.id}`
+  });
+  
+  console.log(`Worker ${cluster.worker.id} started on port ${opt.port}`);
+}
+```
+
+Run with environment variables:
+
+```bash
+PORT=8765 PEERS=https://gun-manhattan.herokuapp.com/gun node production-relay.js
+```
+
+## Peer Discovery
+
+### Static Peer Configuration
+
+```javascript
+const gun = Gun({
+  peers: [
+    'http://server1.example.com/gun',
+    'http://server2.example.com/gun',
+    'http://server3.example.com/gun'
+  ]
+});
+```
+
+### Dynamic Peer Discovery
+
+```javascript
+// Add peers dynamically
+const gun = Gun();
+
+// Discover peers from a directory service
+fetch('https://api.example.com/gun-peers')
+  .then(res => res.json())
+  .then(peers => {
+    peers.forEach(peer => {
+      gun.opt({ peers: [peer] });
+    });
+  });
+
+// Or from DNS records
+const peerAddresses = await dns.resolve('_gun._tcp.example.com', 'SRV');
+peerAddresses.forEach(addr => {
+  gun.opt({ peers: [`http://${addr.name}:${addr.port}/gun`] });
+});
+```
+
+### WebRTC Peer Discovery
+
+```javascript
+// Using WebRTC for direct peer-to-peer
+const gun = Gun();
+
+// Access mesh for WebRTC
+const mesh = gun.back('opt.mesh');
+
+// Initiate WebRTC connection
+mesh.hi(localStream); // Share your stream
+
+// Listen for incoming WebRTC connections
+gun.on('rtc', (event) => {
+  console.log('WebRTC connection:', event);
+  
+  if (event.streams) {
+    const remoteStream = event.streams[0];
+    // Use remote stream
+  }
+});
+```
+
+## Network Status and Monitoring
+
+### Check Connection Status
+
+```javascript
+// Monitor connection status
+const gun = Gun(['http://localhost:8765/gun']);
+
+gun.on('hi', (peer) => {
+  console.log('Connected to peer:', peer);
+});
+
+gun.on('bye', (peer) => {
+  console.log('Disconnected from peer:', peer);
+});
+
+// Get current peers
+const peers = gun.back('opt.peers');
+Object.keys(peers).forEach(url => {
+  console.log('Peer:', url);
+});
+```
+
+### Network Statistics
+
+```javascript
+// Track sync status
+let syncCount = 0;
+let errorCount = 0;
+
+gun.on('out', (msg) => {
+  syncCount++;
+  console.log('Outgoing message:', msg);
+});
+
+gun.on('in', (msg) => {
+  console.log('Incoming message:', msg);
+});
+
+gun.on('create', (at) => {
+  console.log('New peer created:', at);
+});
+```
+
+### Health Check Endpoint
+
+```javascript
+// Add health check to relay server
+app.get('/health', (req, res) => {
+  const mesh = gun.back('opt.mesh');
+  const peers = Object.keys(mesh.opt.peers || {});
+  
+  res.json({
+    status: 'ok',
+    peers: peers.length,
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  });
+});
+```
+
+## Offline-First Architecture
+
+### Local-First with Background Sync
+
+```javascript
+// Initialize with no peers for offline
+const gun = Gun();
+
+// App works offline
+gun.get('myapp').get('data').put({ value: 'hello' });
+
+// Connect to network when available
+window.addEventListener('online', () => {
+  gun.opt({
+    peers: ['http://localhost:8765/gun']
+  });
+});
+
+// Disconnect when offline
+window.addEventListener('offline', () => {
+  console.log('Working offline...');
+});
+```
+
+### Service Worker for Offline Support
+
+```javascript
+// service-worker.js
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open('gun-cache-v1').then((cache) => {
+      return cache.addAll([
+        '/',
+        '/gun.js',
+        '/app.js',
+        '/style.css'
+      ]);
+    })
+  );
+});
+
+self.addEventListener('fetch', (event) => {
+  event.respondWith(
+    caches.match(event.request).then((response) => {
+      return response || fetch(event.request);
+    })
+  );
+});
+```
+
+## Data Replication Strategies
+
+### Full Replication
+
+```javascript
+// Replicate entire database
+const sourceGun = Gun(['http://source.example.com/gun']);
+const targetGun = Gun(['http://target.example.com/gun']);
+
+// Copy all data
+sourceGun.get('myapp').once((data) => {
+  targetGun.get('myapp').put(data);
+});
+
+// Continuous sync
+sourceGun.get('myapp').on((data) => {
+  targetGun.get('myapp').put(data);
+});
+```
+
+### Selective Replication
+
+```javascript
+// Only replicate specific paths
+const paths = ['users', 'messages', 'posts'];
+
+paths.forEach(path => {
+  sourceGun.get(path).on((data) => {
+    targetGun.get(path).put(data);
+  });
+});
+```
+
+### Time-Based Sync
+
+```javascript
+// Only sync recent data
+const cutoffTime = Date.now() - (24 * 60 * 60 * 1000); // 24 hours
+
+gun.get('messages').map().on((msg, id) => {
+  if (msg.timestamp > cutoffTime) {
+    // Include in sync
+    replicaGun.get('messages').get(id).put(msg);
+  }
+});
+```
+
+## Security and Access Control
+
+### Peer Whitelisting
+
+```javascript
+// Only allow specific peers
+const allowedPeers = [
+  'http://trusted1.example.com/gun',
+  'http://trusted2.example.com/gun'
+];
+
+const gun = Gun({
+  peers: allowedPeers,
+  // Reject other peers
+  multicast: false
+});
+```
+
+### Rate Limiting
+
+```javascript
+// Add rate limiting to relay
+const rateLimit = require('express-rate-limit');
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000 // limit each IP to 1000 requests per windowMs
+});
+
+app.use('/gun', limiter);
+```
+
+### Authenticated Relays
+
+```javascript
+// Require authentication for relay access
+app.use('/gun', (req, res, next) => {
+  const token = req.headers['authorization'];
+  
+  if (!token || !validateToken(token)) {
+    return res.status(401).send('Unauthorized');
+  }
+  
+  next();
+});
+```
+
+## Deployment Options
+
+### Docker Deployment
+
+```dockerfile
+# Dockerfile
+FROM node:16-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --only=production
+
+COPY . .
+
+EXPOSE 8765
+
+CMD ["node", "server.js"]
+```
+
+```bash
+# Build and run
+docker build -t gun-relay .
+docker run -p 8765:8765 -v gun-data:/app/data gun-relay
+```
+
+### Kubernetes Deployment
+
+```yaml
+# gun-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gun-relay
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: gun-relay
+  template:
+    metadata:
+      labels:
+        app: gun-relay
+    spec:
+      containers:
+      - name: gun-relay
+        image: gun-relay:latest
+        ports:
+        - containerPort: 8765
+        env:
+        - name: PORT
+          value: "8765"
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: gun-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gun-relay-service
+spec:
+  selector:
+    app: gun-relay
+  ports:
+  - port: 8765
+    targetPort: 8765
+  type: LoadBalancer
+```
+
+### Systemd Service
+
+```ini
+# /etc/systemd/system/gun-relay.service
+[Unit]
+Description=GUN Relay Server
+After=network.target
+
+[Service]
+Type=simple
+User=gun
+WorkingDirectory=/opt/gun-relay
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+Environment=PORT=8765
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+# Enable and start
+sudo systemctl enable gun-relay
+sudo systemctl start gun-relay
+sudo systemctl status gun-relay
+```
+
+## Best Practices
+
+1. **Use Multiple Relays** - Don't rely on a single server
+2. **Enable HTTPS** - Secure your connections
+3. **Monitor Health** - Track peer connections and sync status
+4. **Implement Backups** - Regularly backup relay data
+5. **Rate Limit** - Protect against abuse
+6. **Geographic Distribution** - Place relays near users
+7. **Graceful Degradation** - Work offline when network unavailable
+
+## Troubleshooting
+
+### Connection Issues
+
+```javascript
+// Debug connection problems
+const gun = Gun({
+  peers: ['http://localhost:8765/gun'],
+  axe: false // disable connection timeout
+});
+
+// Log all events
+gun.on('hi', peer => console.log('Connected:', peer));
+gun.on('bye', peer => console.log('Disconnected:', peer));
+gun.on('error', err => console.error('Error:', err));
+```
+
+### Network Inspector
+
+```javascript
+// Monitor all network traffic
+const gun = Gun();
+
+gun.on('out', msg => {
+  console.log('→ Outgoing:', msg);
+});
+
+gun.on('in', msg => {
+  console.log('← Incoming:', msg);
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Chat App" icon="comments" href="/examples/chat-app">
+    Build a P2P chat application
+  </Card>
+  <Card title="Security" icon="shield" href="/sea/overview">
+    Learn about securing your network
+  </Card>
+  <Card title="Storage Adapters" icon="database" href="/storage/overview">
+    Persist data with custom adapters
+  </Card>
+  <Card title="Scaling" icon="chart-line" href="/advanced/performance">
+    Scale your GUN network
+  </Card>
+</CardGroup>

@@ -1,0 +1,286 @@
+---
+title: "Graph Database"
+description: "Understanding GUN's graph data model, nodes, edges, and how it differs from traditional databases"
+---
+
+## What is a Graph Database?
+
+GUN is a **graph database**, which means it stores data as interconnected nodes and edges rather than in rigid tables or document hierarchies. This fundamental design choice enables GUN to handle complex relationships, circular references, and flexible data structures that would be difficult or impossible in traditional SQL or NoSQL databases.
+
+### The Graph Data Model
+
+In GUN, everything is a **graph**:
+
+- **Nodes**: Objects that contain data (key-value pairs)
+- **Edges**: References between nodes (relationships)
+- **Soul**: A unique identifier for each node (like `#` in GUN)
+
+```javascript
+// A simple node with a soul
+var user = {
+  _: {
+    '#': 'user/alice',  // soul - unique identifier
+    '>': {              // state metadata (for CRDTs)
+      name: 1234567890,
+      age: 1234567891
+    }
+  },
+  name: 'Alice',
+  age: 30
+}
+```
+
+## How GUN Stores Graph Data
+
+### Nodes and Keys
+
+Every piece of data in GUN is stored as a node. You reference nodes using `.get()`:
+
+```javascript
+var gun = Gun();
+
+// Store data at a node
+gun.get('mark').put({
+  name: "Mark",
+  email: "mark@gun.eco",
+});
+
+// Read data from a node
+gun.get('mark').on((data, key) => {
+  console.log("User data:", data);
+  // Output: {name: "Mark", email: "mark@gun.eco"}
+});
+```
+
+### Edges and References
+
+Nodes can reference other nodes, creating **edges** in the graph:
+
+```javascript
+// Create nodes
+gun.get('alice').put({name: 'Alice'});
+gun.get('bob').put({name: 'Bob'});
+
+// Create an edge from alice to bob
+gun.get('alice').get('friend').put(gun.get('bob'));
+
+// Traverse the edge
+gun.get('alice').get('friend').get('name').once(name => {
+  console.log("Alice's friend is:", name); // "Bob"
+});
+```
+
+## Circular References
+
+One of GUN's most powerful features is native support for **circular references** - something that breaks traditional JSON and most databases:
+
+```javascript
+// Create circular reference
+cat = {name: "Fluffy", species: "kitty"};
+mark = {boss: cat};
+cat.slave = mark;
+
+// GUN handles this elegantly!
+gun.get('mark').put(mark);
+
+// Traverse the circle
+gun.get('mark').get('boss').get('name').once(data => {
+  console.log("Mark's boss is", data); // "Fluffy"
+});
+
+gun.get('mark').get('boss').get('slave').once(data => {
+  console.log("Mark is the cat's slave!", data);
+  // Output: {boss: {name: "Fluffy", species: "kitty", slave: [Circular]}}
+});
+```
+
+<Note>
+  GUN automatically detects and handles circular references. You don't need to worry about infinite loops or stack overflow errors.
+</Note>
+
+## Sets: Collections of Nodes
+
+GUN provides **sets** to create unordered collections:
+
+```javascript
+// Add items to a list/set
+gun.get('list').set({name: 'Apple', type: 'fruit'});
+gun.get('list').set({name: 'Carrot', type: 'vegetable'});
+gun.get('list').set(gun.get('mark')); // Add reference to existing node
+
+// Iterate over the set
+gun.get('list').map().once(function(item){
+  console.log("Item:", item);
+});
+```
+
+<Warning>
+  Sets in GUN are **unordered**. If you need ordered data, store an index or timestamp as part of your data structure.
+</Warning>
+
+## Graph vs SQL vs NoSQL
+
+<CardGroup cols={3}>
+  <Card title="SQL (Relational)" icon="table">
+    - Fixed schemas
+    - Tables with rows/columns
+    - JOINs for relationships
+    - Poor handling of many-to-many
+  </Card>
+  
+  <Card title="NoSQL (Document)" icon="file">
+    - Flexible schemas
+    - Documents (JSON-like)
+    - Embedded or referenced docs
+    - Difficult circular refs
+  </Card>
+  
+  <Card title="Graph (GUN)" icon="project-diagram">
+    - Schemaless
+    - Nodes + Edges
+    - Natural relationships
+    - Native circular refs
+  </Card>
+</CardGroup>
+
+### Comparison Example
+
+Consider modeling a social network:
+
+**SQL Approach:**
+```sql
+CREATE TABLE users (id, name, email);
+CREATE TABLE friendships (user_id, friend_id);
+-- Requires JOINs and multiple queries
+```
+
+**Document/NoSQL Approach:**
+```javascript
+{
+  id: "alice",
+  name: "Alice",
+  friends: ["bob", "charlie"] // IDs only, need separate lookups
+}
+```
+
+**GUN Graph Approach:**
+```javascript
+// Direct relationships, no joins needed
+gun.get('alice').get('friends').set(gun.get('bob'));
+gun.get('alice').get('friends').set(gun.get('charlie'));
+
+// Traverse naturally
+gun.get('alice').get('friends').map().get('name').on(console.log);
+```
+
+## The Graph Structure in Memory
+
+Internally, GUN represents graphs as nested objects. From the source code (`src/get.js` and `src/put.js`), each node has:
+
+```javascript
+{
+  '_': {           // Metadata
+    '#': 'soul',   // Unique identifier
+    '>': {         // State vector for CRDT
+      key: timestamp
+    }
+  },
+  key: value,      // Actual data
+  edge: reference  // References to other nodes
+}
+```
+
+## Working with Complex Graphs
+
+### Nested Data
+
+```javascript
+// Deep nesting is just connected nodes
+gun.get('company')
+  .get('department')
+  .get('team')
+  .get('member')
+  .get('alice')
+  .put({role: 'engineer'});
+
+// Read it back
+gun.get('company')
+  .get('department')
+  .get('team')
+  .get('member')
+  .get('alice')
+  .once(data => console.log(data));
+```
+
+### Multiple Data Types
+
+GUN can store different data structures simultaneously:
+
+```javascript
+// Key-value
+gun.get('config').put({theme: 'dark', lang: 'en'});
+
+// Document-like
+gun.get('user/alice').put({
+  name: 'Alice',
+  profile: {bio: 'Developer', location: 'SF'}
+});
+
+// Graph relationships
+gun.get('alice').get('follows').set(gun.get('bob'));
+
+// Tables (sets of documents)
+gun.get('users').set(gun.get('user/alice'));
+gun.get('users').set(gun.get('user/bob'));
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Design your graph structure">
+    Think about relationships first. How are your nodes connected? Draw it out.
+  </Step>
+  
+  <Step title="Use meaningful soul identifiers">
+    ```javascript
+    // Good: descriptive
+    gun.get('user/alice')
+    gun.get('post/2024-03-01/hello-world')
+    
+    // Bad: hard to debug
+    gun.get('x1y2z3')
+    ```
+  </Step>
+  
+  <Step title="Avoid deep nesting">
+    Too many `.get()` chains hurt performance. Keep graphs shallow when possible.
+  </Step>
+  
+  <Step title="Leverage sets for collections">
+    Use `.set()` for lists of items, `.map()` to iterate over them.
+  </Step>
+</Steps>
+
+## Performance Considerations
+
+From the GUN benchmarks, the graph engine can handle:
+
+- **20M+ ops/sec** for read operations
+- Native handling of circular references with no performance penalty
+- Efficient memory usage through reference sharing
+
+<Info>
+  GUN's graph structure means nodes are stored once in memory, even if referenced from multiple places. This is more efficient than duplicating data in traditional databases.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Decentralization" icon="network-wired" href="/concepts/decentralization">
+    Learn how GUN's graph syncs across peers
+  </Card>
+  
+  <Card title="Realtime Sync" icon="sync" href="/concepts/realtime-sync">
+    Discover realtime updates with .on()
+  </Card>
+</CardGroup>

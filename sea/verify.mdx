@@ -1,0 +1,477 @@
+---
+title: 'SEA.verify()'
+description: 'Verify digital signatures created with SEA.sign()'
+---
+
+# SEA.verify()
+
+Verify that a digital signature is valid and was created by the owner of a specific public key. Used to confirm data authenticity and integrity.
+
+## Syntax
+
+```javascript
+const verified = await SEA.verify(signed, publicKey)
+SEA.verify(signed, publicKey, callback)
+SEA.verify(signed, publicKey, callback, options)
+```
+
+## Parameters
+
+- **signed** (string|object): Signed data from `SEA.sign()`
+- **publicKey** (string|object): Public key to verify against, or key pair with `pub` property
+- **callback** (function, optional): Called with verified data or undefined
+- **options** (object, optional):
+  - `encode`: Signature encoding (default: 'base64')
+  - `fallback`: Enable fallback verification (default: enabled)
+
+## Returns
+
+A Promise that resolves to:
+- The **original data** if signature is valid
+- **undefined** if signature is invalid
+
+## Basic Usage
+
+### Verify a Signature
+
+```javascript
+const pair = await SEA.pair();
+
+// Sign data
+const signed = await SEA.sign('Hello World', pair);
+
+// Verify with public key
+const verified = await SEA.verify(signed, pair.pub);
+
+if (verified) {
+  console.log('Valid! Message:', verified);  // 'Hello World'
+} else {
+  console.log('Invalid signature');
+}
+```
+
+### Verify with Key Pair
+
+```javascript
+const verified = await SEA.verify(signed, pair);
+// Uses pair.pub for verification
+```
+
+### With Callback
+
+```javascript
+SEA.verify(signed, publicKey, (verified) => {
+  if (verified) {
+    console.log('Verified data:', verified);
+  } else {
+    console.log('Verification failed');
+  }
+});
+```
+
+## How It Works
+
+Reference: `~/workspace/source/sea/verify.js:9-41`
+
+1. **Parse Signed Data**: Extracts message (m) and signature (s)
+2. **Import Public Key**: Converts public key to Web Crypto format
+3. **Hash Message**: Computes SHA-256 hash of the message
+4. **Verify Signature**: Uses ECDSA to verify signature against hash
+5. **Return**: Original message if valid, undefined if invalid
+
+### Verification Process
+
+```javascript
+// 1. Extract message and signature
+const { m: message, s: signature } = parseSignedData(signed);
+
+// 2. Hash the message
+const hash = await SHA256(message);
+
+// 3. Verify signature
+const isValid = await crypto.subtle.verify(
+  { name: 'ECDSA', hash: { name: 'SHA-256' } },
+  publicKey,
+  signature,
+  hash
+);
+
+// 4. Return message if valid
+return isValid ? message : undefined;
+```
+
+## Signature Verification
+
+### Valid Signature
+
+```javascript
+const alice = await SEA.pair();
+const signed = await SEA.sign('Authentic message', alice);
+
+const verified = await SEA.verify(signed, alice.pub);
+console.log(verified);  // 'Authentic message'
+```
+
+### Invalid Signature (Wrong Key)
+
+```javascript
+const alice = await SEA.pair();
+const bob = await SEA.pair();
+
+const signed = await SEA.sign('Message', alice);
+const verified = await SEA.verify(signed, bob.pub);  // Wrong key!
+
+console.log(verified);  // undefined (failed)
+```
+
+### Tampered Data
+
+```javascript
+const signed = await SEA.sign('Original', pair);
+
+// Tamper with the signed data
+const tampered = JSON.parse(signed.slice(3));  // Remove 'SEA' prefix
+tampered.m = 'Modified';  // Change message
+const resigned = 'SEA' + JSON.stringify(tampered);
+
+const verified = await SEA.verify(resigned, pair.pub);
+console.log(verified);  // undefined (tampered data detected)
+```
+
+## Skip Verification
+
+Pass `false` as the public key to skip verification and extract the message:
+
+```javascript
+const signed = await SEA.sign('data', pair);
+const message = await SEA.verify(signed, false);
+
+console.log(message);  // 'data' (unverified!)
+```
+
+<Warning>
+  Using `SEA.verify(data, false)` bypasses security. Only use this when you explicitly want to extract the message without verification, such as for debugging or when verification happens elsewhere.
+</Warning>
+
+## Use Cases
+
+### Verify User Messages
+
+```javascript
+gun.get('messages').map().on(async (signed, id) => {
+  const senderPub = signed.from;  // Sender's public key
+  
+  const verified = await SEA.verify(signed.data, senderPub);
+  if (verified) {
+    displayMessage({
+      from: senderPub,
+      message: verified,
+      verified: true
+    });
+  } else {
+    console.warn('Invalid signature for message:', id);
+  }
+});
+```
+
+### Verify Identity
+
+```javascript
+const verifyIdentity = async (claim, publicKey) => {
+  const verified = await SEA.verify(claim, publicKey);
+  
+  if (!verified) {
+    throw new Error('Identity verification failed');
+  }
+  
+  return {
+    pub: publicKey,
+    identity: verified,
+    verified_at: Date.now()
+  };
+};
+
+const identity = await verifyIdentity(signedClaim, alice.pub);
+```
+
+### Verify Transactions
+
+```javascript
+const verifyTransaction = async (signedTx) => {
+  const tx = await SEA.verify(signedTx, signedTx.m.from);
+  
+  if (!tx) {
+    throw new Error('Invalid transaction signature');
+  }
+  
+  if (tx.amount <= 0) {
+    throw new Error('Invalid amount');
+  }
+  
+  return tx;
+};
+
+const validTx = await verifyTransaction(incomingTx);
+processTransaction(validTx);
+```
+
+### Verify File Integrity
+
+```javascript
+const verifyFile = async (file, signature, authorPub) => {
+  const fileHash = await SEA.work(file, null, null, { name: 'SHA-256' });
+  const verified = await SEA.verify(signature, authorPub);
+  
+  if (verified === fileHash) {
+    console.log('File integrity verified');
+    return true;
+  } else {
+    console.warn('File has been modified or signature is invalid');
+    return false;
+  }
+};
+```
+
+## Fallback Verification
+
+SEA includes fallback verification for backward compatibility with older signature formats.
+
+Reference: `~/workspace/source/sea/verify.js:55-79`
+
+### Automatic Fallback
+
+```javascript
+// Modern signature fails, tries legacy format automatically
+const verified = await SEA.verify(legacySignedData, publicKey);
+```
+
+### Configure Fallback
+
+```javascript
+// Disable fallback (strict mode)
+SEA.opt.fallback = 0;
+
+const verified = await SEA.verify(signed, pub);
+// Only accepts current signature format
+```
+
+## Security Considerations
+
+### Trust the Public Key
+
+Verification only confirms the signature matches the public key. You must trust that the public key belongs to the claimed entity:
+
+```javascript
+const verified = await SEA.verify(signed, publicKey);
+
+if (verified) {
+  // Signature is valid for this public key
+  // But: Do you trust this public key?
+  const isTrusted = await checkPublicKeyTrust(publicKey);
+  
+  if (isTrusted) {
+    processVerifiedData(verified);
+  }
+}
+```
+
+### Message Integrity
+
+Verification guarantees:
+
+- **Authenticity**: Message was signed by holder of private key
+- **Integrity**: Message has not been modified
+- **Non-repudiation**: Signer cannot deny creating the signature
+
+<Warning>
+  Verification does NOT guarantee:
+  - The public key belongs to who you think it does
+  - The message content is truthful
+  - The signer had authority to make the claim
+</Warning>
+
+### Memory Leak Prevention
+
+SEA caches imported public keys to prevent memory leaks:
+
+Reference: `~/workspace/source/sea/verify.js:46-52`
+
+```javascript
+// Keys are cached and reused
+const key1 = await importKey(publicKey);
+const key2 = await importKey(publicKey);  // Returns cached key
+```
+
+## Error Handling
+
+### Invalid Signature
+
+```javascript
+const verified = await SEA.verify(signed, publicKey);
+
+if (!verified) {
+  // Could be:
+  // - Wrong public key
+  // - Tampered data
+  // - Corrupted signature
+  // - Invalid format
+  console.error('Verification failed');
+}
+```
+
+### With Callback
+
+```javascript
+SEA.verify(signed, publicKey, (verified) => {
+  if (verified === undefined) {
+    console.error('Verification failed');
+    return;
+  }
+  console.log('Success:', verified);
+});
+```
+
+### Try-Catch
+
+```javascript
+try {
+  const verified = await SEA.verify(signed, publicKey);
+  if (!verified) {
+    throw new Error('Invalid signature');
+  }
+  process(verified);
+} catch (err) {
+  console.error('Verification error:', err);
+}
+```
+
+## Performance
+
+- **Speed**: ~1-3ms per verification (varies by device)
+- **Caching**: Public keys are cached for reuse
+- **Async**: Always asynchronous
+
+```javascript
+const start = Date.now();
+const verified = await SEA.verify(signed, publicKey);
+console.log('Verified in', Date.now() - start, 'ms');
+```
+
+### Batch Verification
+
+```javascript
+const signedMessages = [...];
+
+const verified = await Promise.all(
+  signedMessages.map(signed => 
+    SEA.verify(signed, publicKey)
+  )
+);
+
+const valid = verified.filter(v => v !== undefined);
+console.log(`${valid.length} of ${signedMessages.length} verified`);
+```
+
+## Common Patterns
+
+### Verify Before Processing
+
+```javascript
+const processSignedData = async (signed, expectedPub) => {
+  const verified = await SEA.verify(signed, expectedPub);
+  
+  if (!verified) {
+    throw new Error('Signature verification failed');
+  }
+  
+  return processData(verified);
+};
+```
+
+### Multi-signature Verification
+
+```javascript
+const verifyMultiSig = async (multiSig, requiredSigners) => {
+  const verified = await Promise.all(
+    requiredSigners.map(async (pub) => {
+      const sig = multiSig.signatures[pub];
+      return await SEA.verify(sig, pub);
+    })
+  );
+  
+  return verified.every(v => v !== undefined);
+};
+
+const isValid = await verifyMultiSig(multiSig, [alice.pub, bob.pub]);
+```
+
+### Verify Chain of Signatures
+
+```javascript
+const verifyChain = async (signedChain, signers) => {
+  let data = signedChain;
+  
+  // Verify in reverse order (last signer first)
+  for (const pub of signers.reverse()) {
+    data = await SEA.verify(data, pub);
+    if (!data) return false;
+  }
+  
+  return data;  // Original data if all valid
+};
+
+const original = await verifyChain(chain, [alice.pub, bob.pub, charlie.pub]);
+```
+
+### Trust List Verification
+
+```javascript
+const trustedKeys = new Set([
+  alice.pub,
+  bob.pub,
+  charlie.pub
+]);
+
+const verifyTrusted = async (signed) => {
+  // Try each trusted key
+  for (const pub of trustedKeys) {
+    const verified = await SEA.verify(signed, pub);
+    if (verified) {
+      return { verified, signer: pub };
+    }
+  }
+  return null;  // No trusted signer found
+};
+
+const result = await verifyTrusted(incomingMessage);
+if (result) {
+  console.log('Signed by trusted key:', result.signer);
+}
+```
+
+## Integration with GUN
+
+### Auto-verification
+
+GUN automatically verifies signatures when reading user data:
+
+```javascript
+gun.get('~' + publicKey).on((data) => {
+  // GUN automatically verifies signatures
+  // Only data with valid signatures is returned
+});
+```
+
+### Manual Verification
+
+```javascript
+gun.get('announcements').map().on(async (signed) => {
+  const verified = await SEA.verify(signed, adminPublicKey);
+  
+  if (verified) {
+    displayAnnouncement(verified);
+  } else {
+    console.warn('Unverified announcement ignored');
+  }
+});
+```

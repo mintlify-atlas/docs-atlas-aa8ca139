@@ -1,0 +1,351 @@
+---
+title: 'Authentication'
+description: 'Authentication flows and session management in GUN SEA'
+---
+
+# Authentication
+
+SEA provides a robust authentication system based on cryptographic key pairs. Users authenticate by proving ownership of their private keys.
+
+## Authentication Methods
+
+There are three ways to authenticate in SEA:
+
+1. **Alias + Password**: Traditional username/password
+2. **Key Pair**: Direct authentication with cryptographic keys
+3. **Session Recall**: Restore from sessionStorage
+
+## Alias and Password Authentication
+
+The most common authentication method for end users.
+
+### Flow Overview
+
+Reference: `~/workspace/source/sea/auth.js:43-96`
+
+```javascript
+user.auth(alias, password, callback)
+```
+
+**Step-by-step process:**
+
+1. **User Lookup**: Fetch user data from `~@alias` node
+2. **Extract Credentials**: Parse the `auth` field containing `{ek, s}`
+3. **Derive Key**: Use PBKDF2 to derive decryption key from password + salt
+4. **Decrypt Private Keys**: Decrypt the encrypted key bundle
+5. **Reconstruct Pair**: Combine public and decrypted private keys
+6. **Set Session**: Store credentials in memory
+7. **Emit Event**: Fire 'auth' event
+
+### Example
+
+```javascript
+const gun = Gun();
+const user = gun.user();
+
+user.auth('alice', 'MySecurePassword123', (ack) => {
+  if (ack.err) {
+    console.error('Authentication failed:', ack.err);
+    return;
+  }
+  
+  console.log('Authenticated as:', user.is.alias);
+  console.log('Public key:', user.is.pub);
+});
+```
+
+### Error Handling
+
+```javascript
+user.auth('alice', 'wrongpassword', (ack) => {
+  if (ack.err) {
+    // Common errors:
+    // "Wrong user or password."
+    // "User cannot be found!"
+    // "Your user account is not published for dApps to access..."
+    
+    if (ack.wait) {
+      console.log('Auth already in progress, please wait');
+    }
+  }
+});
+```
+
+## Key Pair Authentication
+
+Direct authentication using a key pair object. More reliable than alias/password.
+
+### With Complete Key Pair
+
+```javascript
+const pair = {
+  pub: 'signing_public_key',
+  priv: 'signing_private_key',
+  epub: 'encryption_public_key',
+  epriv: 'encryption_private_key'
+};
+
+user.auth(pair, (ack) => {
+  console.log('Authenticated with full keypair');
+});
+```
+
+### With Public Keys Only
+
+If only public keys are provided, SEA will attempt to load and decrypt the private keys:
+
+```javascript
+const partialPair = {
+  pub: 'signing_public_key',
+  epub: 'encryption_public_key'
+};
+
+// SEA will look up the user and prompt for password
+user.auth(partialPair, 'password', (ack) => {
+  console.log('Authenticated and decrypted private keys');
+});
+```
+
+## Session Management
+
+### Persistent Sessions
+
+Store authenticated session in sessionStorage:
+
+```javascript
+user.auth('alice', 'password', (ack) => {
+  // Session stored in sessionStorage
+}, { remember: true });
+```
+
+### Session Recall
+
+Restore a session on page load:
+
+```javascript
+const gun = Gun();
+const user = gun.user();
+
+// Attempt to restore session
+user.recall({ sessionStorage: true });
+
+gun.on('auth', () => {
+  console.log('Session restored for:', user.is.alias);
+});
+```
+
+### Session Data Structure
+
+Stored in `sessionStorage`:
+
+```javascript
+{
+  recall: true,
+  pair: JSON.stringify({
+    pub: '...',
+    priv: '...',
+    epub: '...',
+    epriv: '...'
+  })
+}
+```
+
+<Warning>
+  SessionStorage persists only for the current tab session. It's cleared when the tab closes. For persistent login across sessions, implement your own secure storage mechanism.
+</Warning>
+
+## Authentication State
+
+### Checking Authentication
+
+```javascript
+if (user.is) {
+  console.log('User is authenticated');
+  console.log('Alias:', user.is.alias);
+  console.log('Public Key:', user.is.pub);
+  console.log('Encryption Key:', user.is.epub);
+} else {
+  console.log('No user authenticated');
+}
+```
+
+### Authentication Events
+
+```javascript
+// Listen for authentication
+gun.on('auth', (ack) => {
+  console.log('User authenticated!');
+  console.log('Sea credentials:', ack.sea);
+});
+
+// Authenticate triggers the event
+user.auth('alice', 'password');
+```
+
+## Password Updates
+
+Change a user's password during authentication:
+
+```javascript
+user.auth('alice', 'OldPassword123', (ack) => {
+  if (ack.err) {
+    console.error('Cannot change password:', ack.err);
+    return;
+  }
+  console.log('Password successfully changed!');
+}, { change: 'NewPassword456' });
+```
+
+**Process:**
+
+1. Authenticate with old password
+2. Generate new salt
+3. Derive new key from new password + new salt
+4. Re-encrypt private keys with new derived key
+5. Update `auth` field in user graph
+
+Reference: `~/workspace/source/sea/auth.js:108-127`
+
+## Retry Logic
+
+Authentication includes automatic retry for distributed systems:
+
+```javascript
+user.auth('alice', 'password', callback, {
+  retries: 9  // Default: 9 retries
+});
+```
+
+Retries help when:
+- User data hasn't fully propagated across peers
+- Network delays in distributed networks
+- Data is being synced from remote peers
+
+## Security Model
+
+### Key Storage
+
+**Never stored in plaintext:**
+- Private signing key (priv)
+- Private encryption key (epriv)
+
+**Always encrypted with:**
+- PBKDF2-derived key (from password + salt)
+- AES-GCM encryption
+- 100,000 iterations (configurable)
+
+### Memory Security
+
+Reference: `~/workspace/source/sea/auth.js:75-76`
+
+```javascript
+// Credentials stored in memory only
+user.is = {
+  pub: pair.pub,
+  epub: pair.epub,
+  alias: alias || pair.pub
+};
+
+user._.sea = pair;  // Full keypair in private scope
+```
+
+### Session Security
+
+SessionStorage is used only if explicitly enabled:
+
+```javascript
+if (SEA.window && opt.remember) {
+  SEA.window.sessionStorage.recall = true;
+  SEA.window.sessionStorage.pair = JSON.stringify(pair);
+}
+```
+
+<Warning>
+  SessionStorage stores the decrypted key pair. Only use `remember: true` in trusted environments. Consider implementing additional encryption for the sessionStorage data in production applications.
+</Warning>
+
+## Advanced Authentication
+
+### Plugin-based Authentication
+
+SEA supports custom authentication plugins via `SEA.name`:
+
+```javascript
+user.auth();  // No params triggers plugin flow
+
+// Implement custom plugin
+SEA.name = async (callback) => {
+  // Custom authentication logic
+  // e.g., OAuth, biometrics, hardware keys
+  callback('custom_user_identifier');
+};
+```
+
+### Multi-device Authentication
+
+Authenticate the same user across multiple devices:
+
+```javascript
+// Device 1: Create user and export keys
+user.create('alice', 'password', async (ack) => {
+  const exportedPair = await user._.sea;
+  // Securely transfer 'exportedPair' to Device 2
+});
+
+// Device 2: Import and authenticate
+user.auth(importedPair, (ack) => {
+  console.log('Same user, different device');
+});
+```
+
+## Best Practices
+
+1. **Always use callbacks** to handle async authentication
+2. **Check `user.is`** before performing authenticated operations
+3. **Handle errors gracefully** - network issues, wrong passwords, missing users
+4. **Use session recall** for better UX, but understand security implications
+5. **Implement logout** - call `user.leave()` when user exits
+6. **Validate passwords** - enforce minimum 8 characters (SEA's default)
+7. **Use HTTPS** - required for Web Crypto API in browsers
+
+## Common Patterns
+
+### Auto-authenticate on Load
+
+```javascript
+const gun = Gun();
+const user = gun.user().recall({ sessionStorage: true });
+
+gun.on('auth', () => {
+  console.log('User ready:', user.is.alias);
+  loadUserData();
+});
+```
+
+### Protected Routes
+
+```javascript
+function requireAuth(callback) {
+  if (!user.is) {
+    redirectToLogin();
+    return;
+  }
+  callback();
+}
+
+requireAuth(() => {
+  user.get('private-data').once(data => {
+    console.log(data);
+  });
+});
+```
+
+### Graceful Logout
+
+```javascript
+function logout() {
+  user.leave();
+  clearUIState();
+  redirectToLogin();
+}
+```

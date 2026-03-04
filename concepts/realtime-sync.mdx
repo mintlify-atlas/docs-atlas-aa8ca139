@@ -1,0 +1,583 @@
+---
+title: "Realtime Sync"
+description: "How GUN's realtime synchronization works, the pub/sub model, and building collaborative applications"
+---
+
+## What is Realtime Sync?
+
+**Realtime sync** means data changes are instantly propagated to all connected peers. When one user modifies data, all other users see the update immediately - no polling, no refresh needed.
+
+GUN makes realtime sync **automatic and effortless**:
+
+```javascript
+var gun = Gun();
+
+// Listen for updates (realtime subscription)
+gun.get('temperature').on((data, key) => {
+  console.log('Temperature is now:', data);
+});
+
+// Update from anywhere - all subscribers get notified instantly
+gun.get('temperature').put(72);
+// Console logs: "Temperature is now: 72"
+
+setInterval(() => {
+  gun.get('temperature').put(Math.random() * 100);
+}, 1000);
+// Console updates every second automatically!
+```
+
+<Info>
+  GUN's realtime sync works **across devices and networks**. Update on your phone, see it instantly on your laptop.
+</Info>
+
+## The .on() Method
+
+The heart of realtime sync is the `.on()` method. From `src/on.js:4`:
+
+```javascript
+Gun.chain.on = function(tag, arg, eas, as){ 
+  var gun = this, cat = gun._, root = cat.root, act, off, id, tmp;
+  // ... subscription logic
+  return gun;
+}
+```
+
+### Basic Usage
+
+```javascript
+// Subscribe to a node
+gun.get('user/alice').on((data, key) => {
+  console.log('Alice data:', data);
+});
+
+// Triggers immediately with current value
+// Then triggers again on every update
+```
+
+### Subscribe to Nested Properties
+
+```javascript
+// Listen to a specific property
+gun.get('user').get('name').on(name => {
+  console.log('Name changed to:', name);
+});
+
+// Update it
+gun.get('user').put({name: 'Bob'});
+// Console: "Name changed to: Bob"
+```
+
+### Multiple Subscribers
+
+```javascript
+// Multiple callbacks can listen to the same data
+gun.get('counter').on(val => {
+  document.getElementById('display1').textContent = val;
+});
+
+gun.get('counter').on(val => {
+  document.getElementById('display2').textContent = val;
+});
+
+gun.get('counter').on(val => {
+  console.log('Counter:', val);
+});
+
+// All three trigger when counter updates
+gun.get('counter').put(42);
+```
+
+<Note>
+  `.on()` triggers **immediately** with the current value, then continues to trigger on every update.
+</Note>
+
+## .once() vs .on()
+
+### .once() - Single Read
+
+From `src/on.js:57`, `.once()` reads data one time:
+
+```javascript
+// Read once, no subscription
+gun.get('user').get('name').once(name => {
+  console.log('Name is:', name);
+});
+
+// Callback triggers once
+// Future updates are ignored
+```
+
+### .on() - Continuous Subscription
+
+```javascript
+// Subscribe to updates
+gun.get('user').get('name').on(name => {
+  console.log('Name is:', name);
+});
+
+// Callback triggers now and on every future update
+```
+
+### Comparison
+
+<CardGroup cols={2}>
+  <Card title=".once()" icon="one">
+    - Read once
+    - No memory overhead
+    - Use for static data
+    - Unsubscribes automatically
+  </Card>
+  
+  <Card title=".on()" icon="infinity">
+    - Continuous updates
+    - Active subscription
+    - Use for live data
+    - Must call .off() to stop
+  </Card>
+</CardGroup>
+
+## Unsubscribing with .off()
+
+From `src/on.js:93`, stop listening with `.off()`:
+
+```javascript
+// Start listening
+var ref = gun.get('live-data').on(data => {
+  console.log(data);
+});
+
+// Stop listening
+ref.off();
+
+// No more updates will trigger the callback
+```
+
+### Automatic Cleanup
+
+```javascript
+function Component() {
+  const [data, setData] = useState(null);
+  
+  useEffect(() => {
+    const ref = gun.get('data').on(setData);
+    
+    // Cleanup on unmount
+    return () => ref.off();
+  }, []);
+  
+  return <div>{JSON.stringify(data)}</div>;
+}
+```
+
+<Warning>
+  Always call `.off()` when you're done listening, especially in React components, to prevent memory leaks.
+</Warning>
+
+## Pub/Sub Model
+
+GUN implements a **publish-subscribe** pattern:
+
+### Publishers (Writers)
+
+```javascript
+// Publisher writes data
+gun.get('news').put({
+  headline: 'Breaking News!',
+  timestamp: Date.now()
+});
+```
+
+### Subscribers (Readers)
+
+```javascript
+// Subscriber 1
+gun.get('news').on(article => {
+  showNotification(article.headline);
+});
+
+// Subscriber 2  
+gun.get('news').on(article => {
+  logToAnalytics(article);
+});
+
+// Subscriber 3
+gun.get('news').on(article => {
+  updateUI(article);
+});
+
+// All three are notified when publisher writes
+```
+
+### Distributed Pub/Sub
+
+Unlike traditional pub/sub systems (Redis, RabbitMQ), GUN's pub/sub is **distributed**:
+
+```javascript
+// User A publishes from Browser
+gunA.get('chat').set({msg: 'Hello!'});
+
+// User B subscribes from Mobile
+gunB.get('chat').map().on(msg => {
+  displayMessage(msg);
+});
+
+// User C subscribes from Server
+gunC.get('chat').map().on(msg => {
+  archiveMessage(msg);
+});
+
+// All subscribers notified via mesh network
+// No central message broker needed!
+```
+
+## How Realtime Sync Works Internally
+
+### 1. Local Update
+
+When you call `.put()`:
+
+```javascript
+gun.get('score').put(100);
+```
+
+GUN:
+1. Updates local state immediately
+2. Triggers local `.on()` callbacks
+3. Creates a state vector (timestamp)
+4. Broadcasts to mesh network
+
+### 2. Network Propagation
+
+From `src/mesh.js`, updates flow through the mesh:
+
+```javascript
+// Message sent to all connected peers
+{
+  '#': 'msg_id',
+  'put': {
+    '#': 'score',      // Node ID
+    '.': ':',          // Root level
+    ':': 100,          // Value
+    '>': 1234567890    // State (timestamp)
+  }
+}
+```
+
+### 3. Remote Update
+
+When a peer receives the update:
+
+```javascript
+// From src/mesh.js:95
+root.on('in', mesh.last = msg);
+
+// GUN processes the update
+// Triggers .on() callbacks on receiving peer
+```
+
+### 4. Conflict Resolution
+
+If two peers write simultaneously, GUN uses state vectors (CRDTs) to resolve:
+
+```javascript
+// Peer A writes at time 1000
+gunA.get('x').put('A');
+
+// Peer B writes at time 1001  
+gunB.get('x').put('B');
+
+// Higher timestamp wins
+// All peers converge to 'B'
+```
+
+<Info>
+  Learn more about conflict resolution in [CRDT Concepts](/concepts/crdt).
+</Info>
+
+## Building Realtime Apps
+
+### Example 1: Live Counter
+
+```javascript
+// index.html
+<button onclick="increment()">+1</button>
+<div id="count">0</div>
+
+<script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+<script>
+var gun = Gun(['https://relay.example.com/gun']);
+
+// Subscribe to counter
+gun.get('counter').on(count => {
+  document.getElementById('count').textContent = count || 0;
+});
+
+// Increment function
+function increment() {
+  gun.get('counter').once(count => {
+    gun.get('counter').put((count || 0) + 1);
+  });
+}
+</script>
+```
+
+Open this page in multiple tabs - they all sync in realtime!
+
+### Example 2: Collaborative Text Editor
+
+```javascript
+var gun = Gun();
+var doc = gun.get('document');
+
+// Listen for changes
+doc.get('content').on(text => {
+  if(text !== editor.value) {
+    editor.value = text;
+  }
+});
+
+// Save changes
+editor.addEventListener('input', () => {
+  doc.get('content').put(editor.value);
+});
+
+// Realtime collaboration achieved!
+```
+
+<Tip>
+  For production text editors, use operational transforms or finer-grained CRDTs. This example demonstrates the concept.
+</Tip>
+
+### Example 3: Live Dashboard
+
+```javascript
+var gun = Gun();
+var metrics = gun.get('metrics');
+
+// Subscribe to multiple metrics
+metrics.get('cpu').on(cpu => {
+  updateChart('cpu', cpu);
+});
+
+metrics.get('memory').on(mem => {
+  updateChart('memory', mem);
+});
+
+metrics.get('requests').on(req => {
+  updateChart('requests', req);
+});
+
+// Server pushes updates
+setInterval(() => {
+  metrics.put({
+    cpu: getCPUUsage(),
+    memory: getMemoryUsage(),
+    requests: getRequestCount()
+  });
+}, 1000);
+
+// Dashboard updates in realtime!
+```
+
+### Example 4: Multiplayer Game State
+
+```javascript
+var gun = Gun();
+var game = gun.get('game/123');
+
+// Subscribe to player positions
+game.get('players').map().on((player, id) => {
+  updatePlayerPosition(id, player.x, player.y);
+});
+
+// Update your position
+function movePlayer(x, y) {
+  game.get('players').get(myPlayerId).put({x, y});
+}
+
+// All players see updates in realtime
+```
+
+## Performance Optimization
+
+### Debouncing Updates
+
+```javascript
+var timeout;
+var buffer = {};
+
+// Batch rapid updates
+function updateField(field, value) {
+  buffer[field] = value;
+  
+  clearTimeout(timeout);
+  timeout = setTimeout(() => {
+    gun.get('form').put(buffer);
+    buffer = {};
+  }, 100);
+}
+
+// Only sync every 100ms instead of on every keystroke
+```
+
+### Selective Subscriptions
+
+```javascript
+// Bad: Subscribe to everything
+gun.get('users').map().on(user => {
+  // Triggers for ALL users
+});
+
+// Good: Subscribe to specific users
+gun.get('users').get(currentUserId).on(user => {
+  // Only triggers for current user
+});
+```
+
+### Lazy Loading
+
+```javascript
+// Don't subscribe until needed
+function openConversation(chatId) {
+  // Subscribe when chat opens
+  gun.get('chats').get(chatId).map().on(renderMessage);
+}
+
+function closeConversation(chatId) {
+  // Unsubscribe when chat closes
+  gun.get('chats').get(chatId).off();
+}
+```
+
+## Realtime Across Network Conditions
+
+### Online
+
+```javascript
+// Fast realtime updates via WebSocket
+gunA.get('x').put('hello');
+// gunB.on() triggers < 50ms later
+```
+
+### Offline
+
+```javascript
+// Updates are queued locally
+gun.get('draft').put('writing offline...');
+// Queued, waiting for connection
+```
+
+### Back Online
+
+```javascript
+// Queued updates sync automatically
+// Remote .on() callbacks trigger
+gun.get('draft').on(draft => {
+  console.log('Synced:', draft);
+});
+```
+
+<Info>
+  GUN handles online/offline transitions automatically. No code changes needed.
+</Info>
+
+## Best Practices
+
+<Steps>
+  <Step title="Always unsubscribe">
+    Call `.off()` when done to prevent memory leaks.
+    ```javascript
+    const ref = gun.get('data').on(callback);
+    // Later...
+    ref.off();
+    ```
+  </Step>
+  
+  <Step title="Use .once() for static data">
+    If data doesn't change, use `.once()` instead of `.on()`.
+  </Step>
+  
+  <Step title="Debounce rapid updates">
+    Batch frequent writes to reduce network traffic.
+  </Step>
+  
+  <Step title="Subscribe granularly">
+    Listen to specific nodes, not entire collections.
+  </Step>
+</Steps>
+
+## Common Patterns
+
+### State Management
+
+```javascript
+// Use GUN as reactive state store
+const state = gun.get('app-state');
+
+state.get('user').on(user => {
+  updateUserUI(user);
+});
+
+state.get('theme').on(theme => {
+  applyTheme(theme);
+});
+
+// Update state anywhere
+state.get('theme').put('dark');
+```
+
+### Presence (Online Users)
+
+```javascript
+// Track who's online
+const presence = gun.get('presence');
+
+presence.get(myUserId).put({
+  name: 'Alice',
+  status: 'online',
+  lastSeen: Date.now()
+});
+
+// Update heartbeat
+setInterval(() => {
+  presence.get(myUserId).get('lastSeen').put(Date.now());
+}, 5000);
+
+// Show online users
+presence.map().on((user, id) => {
+  if(Date.now() - user.lastSeen < 10000) {
+    showAsOnline(id, user.name);
+  }
+});
+```
+
+### Activity Feeds
+
+```javascript
+// Real-time activity feed
+const feed = gun.get('feed');
+
+feed.map().on((activity, id) => {
+  prependToFeed(activity);
+});
+
+// Post new activity
+feed.set({
+  user: 'Alice',
+  action: 'posted a photo',
+  time: Date.now()
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Offline-First" icon="wifi-slash" href="/concepts/offline-first">
+    Learn how GUN works offline
+  </Card>
+  
+  <Card title="CRDT" icon="code-merge" href="/concepts/crdt">
+    Understand conflict resolution
+  </Card>
+</CardGroup>

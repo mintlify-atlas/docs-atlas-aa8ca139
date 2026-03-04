@@ -1,0 +1,158 @@
+---
+title: Examples Overview
+description: Get started with GUN examples - real-world applications and code samples
+---
+
+# Examples Overview
+
+Welcome to the GUN examples collection! This section provides practical, working examples to help you understand how to build real-world applications with GUN.
+
+## Getting Started
+
+All examples are located in the `examples/` directory of the GUN repository. You can run them locally or explore the code to understand different patterns and use cases.
+
+### Running Examples Locally
+
+1. Clone the GUN repository:
+```bash
+git clone https://github.com/amark/gun.git
+cd gun
+```
+
+2. Install dependencies:
+```bash
+npm install
+```
+
+3. Start the server:
+```bash
+node examples/http.js
+```
+
+4. Open your browser to `http://localhost:8765`
+
+## Available Examples
+
+### Basic Examples
+
+Simple, minimal examples to understand core concepts:
+
+- **Chat** (`basic/chat.html`) - Real-time chat application
+- **Note** (`basic/note.html`) - Collaborative text editor
+- **Meet** (`basic/meet.html`) - Video conferencing with WebRTC
+- **Poll** (`basic/poll.html`) - Real-time polling application
+- **Upload** (`basic/upload.html`) - File upload and sharing
+- **Video** (`basic/video.html`) - Video streaming
+- **Private** (`basic/private.html`) - Encrypted private messaging
+
+### Framework Examples
+
+Examples using popular frontend frameworks:
+
+- **React** - Todo app, chat, and JSON viewer components
+- **Angular** - Full Angular integration example
+- **React Native** - Mobile app examples for iOS/Android
+- **Vue** - Vue.js integration examples
+- **Vanilla JS** - Pure JavaScript implementations
+
+### Server Examples
+
+Different ways to set up a GUN server:
+
+- **Express** (`express.js`) - GUN with Express.js
+- **HTTP** (`http.js`) - Standalone HTTP server with clustering
+- **Hapi** (`hapi.js`) - GUN with Hapi.js framework
+- **Relay** - SQLite-backed relay server example
+
+### Advanced Examples
+
+- **Iris** - Decentralized social network (Twitter/Instagram clone)
+- **Space Game** (`game/space.html`) - Multiplayer space game
+- **Infinite Scroll** - Efficient pagination patterns
+- **Explorer** - Visual database explorer
+- **Stats** (`stats.html`) - Real-time node statistics
+
+## Example Categories
+
+Browse examples by use case:
+
+### Real-time Collaboration
+- [Chat Application](/examples/chat-app) - Build a real-time chat
+- [Collaborative Editor](/examples/collaborative-editor) - Build a Google Docs-style editor
+- [Todo App](/examples/todo-app) - Learn CRUD operations
+
+### Networking & P2P
+- [P2P Networking](/examples/p2p-networking) - Mesh networking and peer discovery
+- WebRTC integration for video/audio
+- Relay server configuration
+
+## Example Structure
+
+Most examples follow this pattern:
+
+```javascript
+// Initialize GUN
+const gun = Gun([
+  'http://localhost:8765/gun',
+  'https://gun-manhattan.herokuapp.com/gun'
+]);
+
+// Get or create a reference
+const app = gun.get('myapp');
+
+// Write data
+app.get('key').put('value');
+
+// Read data
+app.get('key').on(data => {
+  console.log(data); // 'value'
+});
+```
+
+## Best Practices
+
+1. **Start Simple** - Begin with basic examples before moving to complex ones
+2. **Open Multiple Windows** - See real-time sync by opening the same example in multiple browser windows
+3. **Check the Console** - Many examples log useful debugging information
+4. **Read the Source** - Examples are designed to be educational - read the code!
+5. **Experiment** - Modify examples to learn how GUN works
+
+## Tips for Learning
+
+- **Basic Examples**: Perfect for understanding core GUN concepts
+- **Framework Examples**: Learn how to integrate GUN with your preferred framework
+- **Server Examples**: Understand different deployment options
+- **Advanced Examples**: See production-ready patterns and architectures
+
+## Community Examples
+
+The GUN community has created many additional examples:
+
+- [Nick's React Apps](https://github.com/nmaro?tab=repositories&q=gun) - Advanced React + GUN applications
+- [Iris Components](https://examples.iris.to/components/) - Reusable web components
+
+## Need Help?
+
+If you get stuck:
+
+1. Check the [GUN documentation](https://gun.eco/docs/)
+2. Join the community chat at [chat.gun.eco](http://chat.gun.eco)
+3. Search [GitHub issues](https://github.com/amark/gun/issues)
+4. Ask questions in the [GUN forum](https://gun.eco/community)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Chat App" icon="comments" href="/examples/chat-app">
+    Build a real-time chat application
+  </Card>
+  <Card title="Todo App" icon="check" href="/examples/todo-app">
+    Learn CRUD operations with a todo list
+  </Card>
+  <Card title="Collaborative Editor" icon="pen" href="/examples/collaborative-editor">
+    Build a real-time text editor
+  </Card>
+  <Card title="P2P Networking" icon="network-wired" href="/examples/p2p-networking">
+    Explore mesh networking patterns
+  </Card>
+</CardGroup>

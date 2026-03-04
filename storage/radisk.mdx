@@ -1,0 +1,442 @@
+---
+title: "RADisk Storage Adapter"
+description: "File system storage adapter for Node.js using the RAD (Radix) architecture"
+---
+
+# RADisk Storage Adapter
+
+RADisk is GUN's default storage adapter for Node.js environments. It stores data as files on the file system using an efficient Radix tree structure for fast queries and range lookups.
+
+## Installation
+
+RADisk is included with GUN and automatically enabled in Node.js environments:
+
+```javascript
+const Gun = require('gun');
+require('gun/lib/radisk');  // Explicitly load RADisk
+
+const gun = Gun({
+  file: 'radata'  // Directory for data files
+});
+```
+
+## Configuration Options
+
+RADisk accepts the following configuration options:
+
+```javascript
+const Radisk = require('gun/lib/radisk');
+
+const rad = Radisk({
+  // Required: storage interface
+  store: {
+    get: function(file, callback) { },
+    put: function(file, data, callback) { },
+    list: function(callback) { }  // optional
+  },
+  
+  // Optional configuration
+  file: 'radata',              // Base directory name
+  log: console.log,            // Logging function
+  max: 300000000 * 0.3,        // Max file size (90MB default)
+  until: 250,                  // Batch delay in milliseconds
+  wait: 250,                   // Alias for 'until'
+  batch: 10000,                // Max items per batch
+  chunk: 1024 * 1024,          // Chunk size (1MB default)
+  jsonify: true,               // Use JSON format (default)
+  
+  // Comparison function for updates
+  compare: function(oldData, newData, key, file) {
+    // Return newData to save, undefined to skip
+    return newData;
+  }
+});
+```
+
+### Key Options
+
+#### `file` (string)
+Base directory or file name for storing data.
+
+**Default:** `'radata'`
+
+```javascript
+const gun = Gun({ file: 'myapp-data' });
+```
+
+#### `until` / `wait` (number)
+Time in milliseconds to wait before writing batched data to disk. This allows multiple writes to be grouped together.
+
+**Default:** `250`
+
+```javascript
+const gun = Gun({ 
+  file: 'radata',
+  until: 500  // Wait 500ms before writing
+});
+```
+
+#### `batch` (number)
+Maximum number of write operations to batch before forcing a disk write.
+
+**Default:** `10000`
+
+#### `chunk` (number)
+Maximum size (in bytes) for a single data file before it's automatically split.
+
+**Default:** `1048576` (1MB)
+
+```javascript
+const gun = Gun({ 
+  file: 'radata',
+  chunk: 1024 * 1024 * 10  // 10MB chunks
+});
+```
+
+#### `max` (number)
+Maximum size for individual data values.
+
+**Default:** `90000000` (90MB)
+
+#### `jsonify` (boolean)
+Whether to use JSON format for storage. When `true`, data is stored as JSON objects. When `false`, uses the legacy RAD encoding format.
+
+**Default:** `true`
+
+## How RADisk Works
+
+### File Organization
+
+RADisk creates a directory structure to store your data:
+
+```
+radata/
+├── %1C                  # Directory index file
+├── %21                  # Data file for keys starting with '!'
+├── user%1Balice         # Data file for 'user/alice' and similar keys
+├── user%1Bbob           # Data file for 'user/bob' and similar keys
+└── ...                  # More data files as needed
+```
+
+File names are URL-encoded to handle special characters:
+- `%1C` - Character code 28 (directory file)
+- `%1B` - The escape character separating soul and key
+- `%21` - Exclamation mark ('!')
+
+### Radix Tree Storage
+
+RADisk uses a Radix tree to efficiently organize keys:
+
+```javascript
+// Example: Storing user data
+gun.get('user/alice').put({ name: 'Alice', age: 30 });
+gun.get('user/bob').put({ name: 'Bob', age: 25 });
+
+// Internally stored in Radix tree:
+{
+  "user": {
+    "/alice/name": { ":":"Alice", ">":1234567890 },
+    "/alice/age": { ":":30, ">":1234567891 },
+    "/bob/name": { ":":"Bob", ">":1234567892 },
+    "/bob/age": { ":":25, ">":1234567893 }
+  }
+}
+```
+
+### Automatic File Splitting
+
+When a data file exceeds the `chunk` size, RADisk automatically splits it:
+
+1. **Creates a new file** for the second half of the keys
+2. **Updates the original file** to contain only the first half
+3. **Updates the directory index** to track both files
+
+This keeps file sizes manageable and improves read performance.
+
+### Write Batching
+
+RADisk batches writes to improve performance:
+
+```javascript
+// These three writes are batched together
+gun.get('user/alice').put({ name: 'Alice' });
+gun.get('user/bob').put({ name: 'Bob' });
+gun.get('user/carol').put({ name: 'Carol' });
+
+// After 250ms (default), all three writes go to disk in one operation
+```
+
+**Benefits:**
+- Reduces disk I/O operations
+- Improves write performance
+- Reduces risk of corruption from partial writes
+
+## Storage Interface
+
+RADisk requires a storage interface with `get` and `put` methods:
+
+```javascript
+const fs = require('fs');
+const path = require('path');
+
+const store = {
+  // Read a file
+  get: function(file, callback) {
+    fs.readFile(path.join('radata', file), 'utf8', function(err, data) {
+      if (err && err.code === 'ENOENT') {
+        // File doesn't exist - this is not an error
+        return callback(null, undefined);
+      }
+      callback(err, data);
+    });
+  },
+  
+  // Write a file
+  put: function(file, data, callback) {
+    fs.writeFile(path.join('radata', file), data, function(err) {
+      callback(err, err ? null : 1);
+    });
+  },
+  
+  // List all files (optional, but recommended)
+  list: function(callback) {
+    fs.readdir('radata', function(err, files) {
+      if (err) return callback();
+      files.forEach(callback);
+      callback();  // Signal end of list
+    });
+  }
+};
+
+const rad = Radisk({ file: 'radata', store: store });
+```
+
+## Read and Write Operations
+
+### Writing Data
+
+```javascript
+// Write a key-value pair
+rad('user/alice', { ':': 'Alice', '>': Date.now() }, function(err, ok) {
+  if (err) {
+    console.error('Write failed:', err);
+  } else {
+    console.log('Write successful');
+  }
+});
+```
+
+### Reading Data
+
+```javascript
+// Read by exact key
+rad('user/alice', function(err, data) {
+  if (err) {
+    console.error('Read failed:', err);
+  } else {
+    console.log('Data:', data);
+    // { ':': 'Alice', '>': 1234567890 }
+  }
+});
+
+// Range query
+rad('user/', function(err, data) {
+  console.log('All user keys:', data);
+}, {
+  start: 'user/a',
+  end: 'user/z'
+});
+```
+
+## Performance Tuning
+
+### High-Throughput Scenarios
+
+For applications with high write volume:
+
+```javascript
+const gun = Gun({
+  file: 'radata',
+  until: 100,              // Write more frequently
+  batch: 50000,            // Allow larger batches
+  chunk: 1024 * 1024 * 5   // 5MB chunks
+});
+```
+
+### Large Data Sets
+
+For applications storing large amounts of data:
+
+```javascript
+const gun = Gun({
+  file: 'radata',
+  chunk: 1024 * 1024 * 10,  // 10MB chunks
+  max: 500000000 * 0.3      // Allow larger individual files
+});
+```
+
+### Low Latency Requirements
+
+For applications requiring fast writes:
+
+```javascript
+const gun = Gun({
+  file: 'radata',
+  until: 50,     // Write after 50ms
+  batch: 1000    // Smaller batches
+});
+```
+
+## Data Format
+
+### JSON Format (Default)
+
+With `jsonify: true`, data is stored as JSON:
+
+```json
+{
+  "user/alice/name": {
+    ":":"Alice",
+    ">":1234567890
+  },
+  "user/alice/age": {
+    ":":30,
+    ">":1234567891
+  }
+}
+```
+
+### RAD Format (Legacy)
+
+With `jsonify: false`, data uses the RAD encoding:
+
+```
+!#"user"!#"alice"!#"name":"Alice"
+!#"user"!#"alice"!#"age":+30!
+```
+
+The RAD format uses special encoding:
+- `!` - Field separator (ASCII 31)
+- `#` - Prefix length indicator
+- `"` - String value
+- `+` - Number value
+- `:` - Value separator
+
+## File System Considerations
+
+### Directory Structure
+
+Ensure the storage directory exists and has proper permissions:
+
+```javascript
+const fs = require('fs');
+
+// Create directory if it doesn't exist
+if (!fs.existsSync('radata')) {
+  fs.mkdirSync('radata', { recursive: true });
+}
+```
+
+### Backup and Recovery
+
+To backup RADisk data:
+
+```bash
+# Simple backup
+tar -czf backup.tar.gz radata/
+
+# Incremental backup with rsync
+rsync -av radata/ backup/radata/
+```
+
+To restore:
+
+```bash
+# Extract backup
+tar -xzf backup.tar.gz
+```
+
+### Cleaning Up
+
+RADisk automatically manages file lifecycle, but you can manually clean up if needed:
+
+```javascript
+const fs = require('fs');
+const path = require('path');
+
+// Remove all data files
+fs.readdir('radata', (err, files) => {
+  if (err) return console.error(err);
+  files.forEach(file => {
+    fs.unlink(path.join('radata', file), err => {
+      if (err) console.error(err);
+    });
+  });
+});
+```
+
+## Troubleshooting
+
+### Error: "Radisk needs `opt.store` interface"
+
+You must provide a storage interface:
+
+```javascript
+const Radisk = require('gun/lib/radisk');
+
+const rad = Radisk({
+  store: {
+    get: function(file, cb) { /* ... */ },
+    put: function(file, data, cb) { /* ... */ }
+  }
+});
+```
+
+### Error: "Data too big!"
+
+Increase the `max` option:
+
+```javascript
+const gun = Gun({
+  file: 'radata',
+  max: 1000000000 * 0.3  // Allow larger values
+});
+```
+
+### Corrupt File Recovery
+
+RADisk automatically detects and removes corrupt files:
+
+```javascript
+// RADisk will log corrupt files and attempt recovery
+// Check console output for:
+// "File 'filename' does not have root radix!"
+```
+
+## Best Practices
+
+1. **Use appropriate chunk sizes**: Smaller chunks for many small writes, larger chunks for fewer large writes
+2. **Enable batching**: Keep `until` at 250ms or higher for better performance
+3. **Backup regularly**: Use file system snapshots or regular backups
+4. **Monitor disk space**: RADisk can grow based on your data
+5. **Use JSON format**: The default JSON format is more debuggable than RAD format
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Rindexed Adapter" icon="database" href="/storage/rindexed">
+    Browser storage with IndexedDB
+  </Card>
+  
+  <Card title="S3 Adapter" icon="cloud" href="/storage/s3">
+    Cloud storage with Amazon S3
+  </Card>
+  
+  <Card title="Custom Adapters" icon="code" href="/storage/custom-adapters">
+    Build your own storage adapter
+  </Card>
+  
+  <Card title="Performance" icon="gauge-high" href="/advanced/performance">
+    Optimize GUN performance
+  </Card>
+</CardGroup>

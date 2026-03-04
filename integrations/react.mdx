@@ -1,0 +1,268 @@
+---
+title: React Integration
+description: Learn how to integrate GUN with React applications
+---
+
+# React Integration
+
+GUN integrates seamlessly with React applications, enabling real-time, decentralized data synchronization in your React components.
+
+## Installation
+
+<Steps>
+  <Step title="Install GUN">
+    Install GUN via npm or yarn:
+    ```bash
+    npm install gun
+    # or
+    yarn add gun
+    ```
+  </Step>
+
+  <Step title="Import GUN in your React app">
+    Import GUN in your component or at the application level:
+    ```javascript
+    import Gun from 'gun/gun'
+    ```
+  </Step>
+
+  <Step title="Initialize GUN instance">
+    Create a GUN instance, typically in your main App component:
+    ```javascript
+    const gun = Gun(location.origin + '/gun')
+    // Or for local-only development:
+    const gun = Gun()
+    ```
+  </Step>
+</Steps>
+
+## Basic Usage
+
+### Setting Up GUN in App Component
+
+Here's how to initialize GUN in your main App component and pass it to child components:
+
+```javascript
+import React, { Component } from 'react'
+import Gun from 'gun/gun'
+import Todos from './Todos'
+
+class App extends Component {
+  constructor() {
+    super();
+    this.gun = Gun(location.origin + '/gun')
+  }
+  
+  render() {
+    return (
+      <div>
+        <h1>My GUN App</h1>
+        <Todos gun={this.gun} />
+      </div>
+    );
+  }
+}
+
+export default App;
+```
+
+### Using GUN in a Todo Component
+
+Here's a complete example of a Todo component using GUN for real-time data synchronization:
+
+```javascript
+import React, { Component }  from 'react'
+import Gun from 'gun/gun'
+import 'gun/lib/path'
+
+const formatTodos = todos => Object.keys(todos)
+  .map(key => ({ key, val: todos[key] }))
+  .filter(t => Boolean(t.val) && t.key !== '_')
+
+export default class Todos extends Component {
+  constructor({gun}) {
+    super()
+    this.gun = gun.get('todos');
+    this.state = {newTodo: '', todos: []}
+  }
+
+  componentWillMount() {
+    this.gun.on(todos => this.setState({
+      todos: formatTodos(todos)
+    }))
+  }
+
+  add = e => {
+    e.preventDefault()
+    this.gun.path(Gun.text.random()).put(this.state.newTodo)
+    this.setState({newTodo: ''})
+  }
+
+  del = key => this.gun.path(key).put(null)
+
+  handleChange = e => this.setState({ newTodo: e.target.value})
+
+  render() {
+    return <div>
+      <form onSubmit={this.add}>
+        <input value={this.state.newTodo} onChange={this.handleChange} />
+        <button onClick={this.add}>Add</button>
+      </form>
+      <ul>
+        {this.state.todos.map(todo => 
+          <li key={todo.key} onClick={_=>this.del(todo.key)}>
+            {todo.val}
+          </li>
+        )}
+      </ul>
+    </div>
+  }
+}
+```
+
+### Real-time Chat Component
+
+Here's an example of a real-time chat component using GUN:
+
+```javascript
+import React, { Component }  from 'react'
+import Gun from 'gun/gun'
+
+const formatMsgs = msgs => Object.keys(msgs)
+  .map(key => ({ key, ...msgs[key] }))
+  .filter(m => Boolean(m.when) && m.key !== '_')
+  .sort((a, b) => a.when - b.when)
+  .map(m => ((m.whenFmt = new Date(m.when).toLocaleString().toLowerCase()), m))
+
+export default class Chat extends Component {
+  constructor({gun}) {
+    super()
+    this.gun = gun.get('chat');
+    this.state = {
+      newMsg: '',
+      name: (document.cookie.match(/alias\=(.*?)(\&|$|\;)/i)||[])[1]||'',
+      msgs: {},
+    }
+  }
+
+  componentWillMount() {
+    const tmpState = {}
+    this.gun.map().val((msg, key) => {
+      tmpState[key] = msg
+      this.setState({msgs: Object.assign({}, this.state.msgs, tmpState)})
+    })
+  }
+
+  send = e => {
+    e.preventDefault()
+    const who = this.state.name || 'user' + Gun.text.random(6)
+    this.setState({name: who})
+    document.cookie = ('alias=' + who) 
+    const when = Gun.time.is()
+    const key = `${when}_${Gun.text.random(4)}`
+    this.gun.path(key).put({
+      who,
+      when,
+      what: this.state.newMsg,
+    })
+    this.setState({newMsg: ''})
+  }
+
+  render() {
+    const msgs = formatMsgs(this.state.msgs)
+    return <div>
+      <ul>
+        {msgs.map(msg =>
+          <li key={msg.key}>
+            <b>{msg.who}:</b> {msg.what}
+            <span className="when">{msg.whenFmt}</span>
+          </li>
+        )}
+      </ul>
+      <form onSubmit={this.send}>
+        <input 
+          value={this.state.name} 
+          className="who" 
+          onChange={e => this.setState({ name: e.target.value})} 
+        />
+        <input 
+          value={this.state.newMsg} 
+          className="what" 
+          onChange={e => this.setState({ newMsg: e.target.value})} 
+        />
+        <button onClick={this.send}>Send</button>
+      </form>
+    </div>
+  }
+}
+```
+
+## React Hooks Pattern
+
+For functional components, you can create custom hooks for GUN:
+
+```javascript
+import { useState, useEffect } from 'react'
+
+function useGunState(gun, initialState) {
+  const [state, setState] = useState(initialState)
+  
+  useEffect(() => {
+    gun.on(data => setState(data))
+  }, [])
+  
+  return [state, (newData) => gun.put(newData)]
+}
+
+// Usage
+function MyComponent({ gun }) {
+  const [todos, setTodos] = useGunState(gun.get('todos'), [])
+  
+  return (
+    <div>
+      {/* Your component JSX */}
+    </div>
+  )
+}
+```
+
+## State Management
+
+GUN can work alongside or replace traditional state management solutions like Redux:
+
+- **Real-time updates**: GUN's `.on()` method provides automatic state synchronization
+- **Offline-first**: Data persists locally and syncs when connected
+- **Decentralized**: No central server required for data synchronization
+
+## Best Practices
+
+1. **Initialize once**: Create your GUN instance at the app level and pass it down via props or context
+2. **Clean up subscriptions**: Use `componentWillUnmount()` to remove listeners when components unmount
+3. **Filter metadata**: GUN stores metadata with `_` keys - filter these out when rendering
+4. **Use keys wisely**: Use `Gun.text.random()` for unique keys or timestamps for ordered data
+
+## Common Patterns
+
+### Passing GUN via Context
+
+```javascript
+import React, { createContext, useContext } from 'react'
+import Gun from 'gun/gun'
+
+const GunContext = createContext()
+
+export function GunProvider({ children }) {
+  const gun = Gun(location.origin + '/gun')
+  return <GunContext.Provider value={gun}>{children}</GunContext.Provider>
+}
+
+export function useGun() {
+  return useContext(GunContext)
+}
+```
+
+## Next Steps
+
+- Learn about [authentication with SEA](/sea/auth)
+- Explore [graph data structures](/concepts/graph-database)
+- Check out [deployment options](/advanced/deployment)

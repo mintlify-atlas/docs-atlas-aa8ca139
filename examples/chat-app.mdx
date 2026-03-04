@@ -1,0 +1,485 @@
+---
+title: Build a Chat Application
+description: Create a real-time chat app with GUN - complete tutorial with working code
+---
+
+# Build a Real-Time Chat Application
+
+Learn how to build a real-time chat application using GUN. This tutorial covers everything from basic messaging to advanced features like timestamps and user management.
+
+## What You'll Build
+
+- Real-time message synchronization
+- User nicknames and identity
+- Message timestamps
+- Automatic scrolling
+- Multi-user support
+- Offline-first with automatic sync
+
+## Quick Start: Minimal Chat
+
+Here's the simplest possible chat application in just 21 lines:
+
+```html
+<!DOCTYPE html>
+<ul id='list'></ul>
+<form id='form'>
+  <input id='who' placeholder='name'>
+  <input id='what' placeholder='say'>
+  <input type='submit' value='send'>
+</form>
+<script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+<script>
+gun = GUN();
+chat = gun.get("chat" + location.hash);
+view = document;
+
+form.onsubmit = (eve) => {
+  chat.set(who.value + ': ' + what.value);
+  eve.preventDefault();
+  what.value = "";
+}
+
+chat.map().on(function show(data, id){
+  (view.line = view.getElementById(id) || view.createElement("li")).id = id;
+  list.appendChild(view.line).innerText = data;
+  window.scroll(0, list.offsetHeight);
+});
+</script>
+```
+
+### How It Works
+
+1. **Initialize GUN**: `gun = GUN()` creates a new GUN instance
+2. **Get Chat Room**: `chat = gun.get("chat" + location.hash)` creates/joins a room based on URL hash
+3. **Send Messages**: `chat.set()` adds messages to the set
+4. **Receive Messages**: `chat.map().on()` listens for all messages in real-time
+
+### Try It Out
+
+1. Save the code as `chat.html`
+2. Open it in multiple browser windows
+3. Add `#room1` to the URL to join different rooms
+4. Type messages and see them sync instantly!
+
+## Full-Featured Chat App
+
+Here's a more complete example with better UX:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GUN Chat</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    
+    .chat-messages {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 20px;
+      height: 400px;
+      overflow-y: auto;
+      background: #f9f9f9;
+      margin-bottom: 20px;
+    }
+    
+    .message {
+      margin-bottom: 15px;
+      padding: 10px;
+      background: white;
+      border-radius: 5px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    .message-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 5px;
+    }
+    
+    .message-author {
+      font-weight: bold;
+      color: #0066cc;
+    }
+    
+    .message-time {
+      color: #666;
+      font-size: 0.85em;
+    }
+    
+    .chat-form {
+      display: flex;
+      gap: 10px;
+    }
+    
+    input {
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 16px;
+    }
+    
+    #name-input {
+      flex: 1;
+    }
+    
+    #message-input {
+      flex: 3;
+    }
+    
+    button {
+      padding: 10px 20px;
+      background: #0066cc;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+    
+    button:hover {
+      background: #0052a3;
+    }
+  </style>
+</head>
+<body>
+  <h1>GUN Chat</h1>
+  <div class="chat-messages" id="messages"></div>
+  
+  <form class="chat-form" id="chat-form">
+    <input id="name-input" placeholder="Your name" required>
+    <input id="message-input" placeholder="Type a message..." required>
+    <button type="submit">Send</button>
+  </form>
+
+  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
+  <script>
+    // Initialize GUN
+    const gun = GUN([
+      'http://localhost:8765/gun',
+      'https://gun-manhattan.herokuapp.com/gun'
+    ]);
+    
+    // Get chat reference
+    const chat = gun.get('chat/' + (location.hash.slice(1) || 'lobby'));
+    
+    // Get DOM elements
+    const form = document.getElementById('chat-form');
+    const nameInput = document.getElementById('name-input');
+    const messageInput = document.getElementById('message-input');
+    const messagesDiv = document.getElementById('messages');
+    
+    // Load saved username
+    const savedName = localStorage.getItem('chatName');
+    if (savedName) {
+      nameInput.value = savedName;
+    }
+    
+    // Send message
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      
+      const username = nameInput.value.trim();
+      const message = messageInput.value.trim();
+      
+      if (!username || !message) return;
+      
+      // Save username
+      localStorage.setItem('chatName', username);
+      
+      // Create message object
+      const msg = {
+        who: username,
+        what: message,
+        when: Gun.state() // GUN's vector clock timestamp
+      };
+      
+      // Add to chat
+      chat.set(msg);
+      
+      // Clear input
+      messageInput.value = '';
+      messageInput.focus();
+    });
+    
+    // Receive messages
+    const messages = {};
+    
+    chat.map().once((msg, id) => {
+      if (!msg || !msg.who || !msg.what) return;
+      
+      // Store message
+      messages[id] = msg;
+      
+      // Render all messages sorted by timestamp
+      renderMessages();
+    });
+    
+    function renderMessages() {
+      // Sort messages by timestamp
+      const sorted = Object.entries(messages)
+        .sort(([, a], [, b]) => (a.when || 0) - (b.when || 0));
+      
+      // Clear container
+      messagesDiv.innerHTML = '';
+      
+      // Render each message
+      sorted.forEach(([id, msg]) => {
+        const div = document.createElement('div');
+        div.className = 'message';
+        div.id = id;
+        
+        const time = new Date(msg.when);
+        const timeStr = time.toLocaleTimeString();
+        
+        div.innerHTML = `
+          <div class="message-header">
+            <span class="message-author">${escapeHtml(msg.who)}</span>
+            <span class="message-time">${timeStr}</span>
+          </div>
+          <div class="message-content">${escapeHtml(msg.what)}</div>
+        `;
+        
+        messagesDiv.appendChild(div);
+      });
+      
+      // Auto-scroll to bottom
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+    
+    // Escape HTML to prevent XSS
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+    
+    // Focus message input on load
+    messageInput.focus();
+  </script>
+</body>
+</html>
+```
+
+## React Chat Component
+
+Here's a production-ready React chat component:
+
+```jsx
+import React, { Component } from 'react';
+import Gun from 'gun/gun';
+
+const formatMsgs = msgs => Object.keys(msgs)
+  .map(key => ({ key, ...msgs[key] }))
+  .filter(m => Boolean(m.when) && m.key !== '_')
+  .sort((a, b) => a.when - b.when)
+  .map(m => ((m.whenFmt = new Date(m.when).toLocaleString()), m));
+
+export default class Chat extends Component {
+  constructor({ gun }) {
+    super();
+    this.gun = gun.get('chat');
+    this.state = {
+      newMsg: '',
+      name: (document.cookie.match(/alias\=(.*?)(\&|$|\;)/i) || [])[1] || '',
+      msgs: {},
+    };
+  }
+
+  componentWillMount() {
+    const tmpState = {};
+    this.gun.map().val((msg, key) => {
+      tmpState[key] = msg;
+      this.setState({ msgs: Object.assign({}, this.state.msgs, tmpState) });
+    });
+  }
+
+  send = e => {
+    e.preventDefault();
+    const who = this.state.name || 'user' + Gun.text.random(6);
+    this.setState({ name: who });
+    document.cookie = ('alias=' + who);
+    const when = Gun.time.is();
+    const key = `${when}_${Gun.text.random(4)}`;
+    this.gun.path(key).put({
+      who,
+      when,
+      what: this.state.newMsg,
+    });
+    this.setState({ newMsg: '' });
+  }
+
+  render() {
+    const msgs = formatMsgs(this.state.msgs);
+    return (
+      <div className="chat-container">
+        <ul className="chat-messages">
+          {msgs.map(msg =>
+            <li key={msg.key}>
+              <b>{msg.who}:</b> {msg.what}
+              <span className="time">{msg.whenFmt}</span>
+            </li>
+          )}
+        </ul>
+        <form onSubmit={this.send}>
+          <input 
+            value={this.state.name} 
+            className="name-input" 
+            placeholder="Your name"
+            onChange={e => this.setState({ name: e.target.value })} 
+          />
+          <input 
+            value={this.state.newMsg} 
+            className="message-input" 
+            placeholder="Type a message..."
+            onChange={e => this.setState({ newMsg: e.target.value })} 
+          />
+          <button onClick={this.send}>Send</button>
+        </form>
+      </div>
+    );
+  }
+}
+
+// Usage:
+// const gun = Gun();
+// <Chat gun={gun} />
+```
+
+## Key Concepts
+
+### Using Sets for Messages
+
+```javascript
+// Add to set (no duplicates by ID)
+chat.set({ text: 'Hello' });
+
+// Listen to all items in set
+chat.map().on(message => {
+  console.log(message);
+});
+```
+
+### Message Timestamps
+
+```javascript
+// GUN's vector clock timestamp
+const timestamp = Gun.state();
+
+// JavaScript timestamp
+const jsTime = Date.now();
+
+// Use for sorting
+const when = Gun.state();
+messages.sort((a, b) => a.when - b.when);
+```
+
+### Room/Channel Support
+
+```javascript
+// Use URL hash for rooms
+const room = location.hash.slice(1) || 'lobby';
+const chat = gun.get('chat/' + room);
+
+// Or user input
+const room = prompt('Enter room name');
+const chat = gun.get('chat/' + room);
+```
+
+### Preventing XSS Attacks
+
+```javascript
+// Always escape user content
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Use textContent instead of innerHTML
+element.textContent = userMessage;
+```
+
+## Advanced Features
+
+### Private Messages
+
+See [User Authentication](/sea/auth) for encrypted private messaging.
+
+### Message Deletion
+
+```javascript
+// "Delete" by setting to null
+chat.get(messageId).put(null);
+
+// Filter out null messages
+chat.map().on((msg, id) => {
+  if (msg === null) {
+    // Remove from UI
+    document.getElementById(id)?.remove();
+  }
+});
+```
+
+### Typing Indicators
+
+```javascript
+// Ephemeral data (not persisted)
+const presence = gun.get('presence/' + room);
+
+messageInput.addEventListener('input', () => {
+  presence.get(username).put({
+    typing: true,
+    lastSeen: Date.now()
+  });
+});
+
+// Clear after delay
+let typingTimeout;
+messageInput.addEventListener('input', () => {
+  clearTimeout(typingTimeout);
+  typingTimeout = setTimeout(() => {
+    presence.get(username).put({ typing: false });
+  }, 1000);
+});
+```
+
+### Message Reactions
+
+```javascript
+// Add reaction to message
+function addReaction(messageId, emoji) {
+  chat.get(messageId).get('reactions').get(emoji).put({
+    count: 1,
+    users: [currentUser]
+  });
+}
+
+// Listen for reactions
+chat.get(messageId).get('reactions').map().on((reaction, emoji) => {
+  console.log(`${emoji}: ${reaction.count}`);
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="User Authentication" icon="lock" href="/sea/auth">
+    Add user login and private messaging
+  </Card>
+  <Card title="Todo App" icon="check" href="/examples/todo-app">
+    Learn CRUD operations
+  </Card>
+  <Card title="P2P Networking" icon="network-wired" href="/examples/p2p-networking">
+    Understand mesh networking
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/gun-constructor">
+    Explore the full API
+  </Card>
+</CardGroup>

@@ -1,0 +1,421 @@
+---
+title: "Decentralization"
+description: "Understanding GUN's peer-to-peer architecture, mesh networking, and how data syncs without a central server"
+---
+
+## What is Decentralization?
+
+GUN is **decentralized by default**, meaning there's no single master server or central authority controlling the data. Instead, every peer (browser, server, mobile app) can read, write, and sync data directly with other peers in a mesh network.
+
+<Info>
+  Traditional databases use a **master-slave** architecture where all data flows through a central server. GUN eliminates this bottleneck entirely.
+</Info>
+
+## Peer-to-Peer Architecture
+
+### No Master, No Slave
+
+In GUN's architecture, all peers are equal:
+
+```javascript
+// Browser peer
+var gun = Gun(['https://relay1.com/gun', 'https://relay2.com/gun']);
+
+// Server peer (relay)
+var Gun = require('gun');
+var server = require('http').createServer().listen(8765);
+Gun({web: server});
+
+// Mobile peer
+import Gun from 'gun/gun';
+var gun = Gun();
+```
+
+Each peer can:
+- **Write** data locally
+- **Read** data from any peer
+- **Relay** data to other peers
+- **Sync** automatically when online
+- **Work offline** and sync later
+
+### Mesh Network Topology
+
+GUN uses a **mesh network** where peers connect to multiple other peers:
+
+```
+    Browser A ←→ Relay 1 ←→ Server
+        ↓           ↓          ↓
+    Browser B ←→ Relay 2 ←→ Database
+        ↓           ↓          ↓  
+    Mobile App ←→ Relay 3 ←→ Storage
+```
+
+Each connection is bidirectional, and data can flow through any path.
+
+## How Mesh Networking Works
+
+The mesh networking logic lives in `src/mesh.js`. Here's how it works:
+
+### 1. Peer Discovery
+
+When a peer starts, it connects to configured relay peers:
+
+```javascript
+// Connect to multiple relays for redundancy
+var gun = Gun([
+  'https://relay1.com/gun',
+  'https://relay2.com/gun', 
+  'https://relay3.com/gun'
+]);
+```
+
+Peers automatically discover each other through relays.
+
+### 2. Message Routing
+
+From `src/mesh.js:24`, when a peer receives data:
+
+```javascript
+var hear = mesh.hear = function(raw, peer){
+  if(!raw){ return }
+  if(opt.max <= raw.length){ 
+    return mesh.say({dam: '!', err: "Message too big!"}, peer) 
+  }
+  // Parse and process message
+  // Then route to other peers
+}
+```
+
+Messages are routed using the **DAM (Data At Mesh)** protocol.
+
+### 3. Deduplication
+
+GUN prevents message loops using deduplication (`src/dup.js`):
+
+```javascript
+// From src/mesh.js:71-74
+if(!(id = msg['#'])){ id = msg['#'] = String.random(9) }
+if(tmp = dup_check(id)){ return } // Already seen this message
+
+// Track which peers already received it
+if((tmp = msg['><']) && 'string' == typeof tmp){ 
+  tmp.slice(0,99).split(',').forEach(function(k){ 
+    this[k] = 1 
+  }, (msg._).yo = {}) 
+}
+```
+
+Each message gets a unique ID. Peers track which messages they've seen and which peers have already received them.
+
+## DAM: Data At Mesh Protocol
+
+GUN's mesh protocol is called **DAM**. It handles:
+
+### Message Format
+
+```javascript
+{
+  '#': 'message_id',        // Unique message ID
+  '##': 'hash',             // Content hash for deduplication
+  '@': 'ack_to_message',    // Acknowledgment of another message
+  '><': 'peer1,peer2',      // Peers that already received this
+  'put': { /* data */ },    // Data being written
+  'get': { /* query */ }    // Data being requested
+}
+```
+
+### Put Operation Across Mesh
+
+```javascript
+// Write data on peer A
+gun.get('user').put({name: 'Alice'});
+
+// Internally, GUN creates a message:
+{
+  '#': 'abc123',
+  'put': {
+    '#': 'user',
+    '.': 'name',
+    ':': 'Alice',
+    '>': 1234567890
+  }
+}
+
+// This message flows through the mesh to all connected peers
+```
+
+From `src/mesh.js:127-147`, the `say` function handles broadcasting:
+
+```javascript
+var say = mesh.say = function(msg, peer){
+  if(!msg){ return false }
+  var id, hash, raw, ack = msg['@'];
+  var meta = msg._||(msg._=function(){});
+  
+  if(!(id = msg['#'])){ id = msg['#'] = String.random(9) }
+  !loop && dup_track(id); // Track message
+  
+  // Broadcast to peer(s)
+  if(!peer && mesh.way){ return mesh.way(msg) }
+  // ... routing logic
+}
+```
+
+### Get Operation Across Mesh
+
+```javascript
+// Request data on peer B
+gun.get('user').get('name').once(name => {
+  console.log(name); // 'Alice'
+});
+
+// GUN sends a GET message through mesh
+{
+  '#': 'def456',
+  'get': {
+    '#': 'user',
+    '.': 'name'
+  }
+}
+
+// Any peer with the data responds with a PUT
+```
+
+## Synchronization Strategies
+
+### Eventual Consistency
+
+GUN uses **eventual consistency** - all peers will eventually have the same data:
+
+```javascript
+// Peer A writes
+gun.get('counter').put({value: 1});
+
+// Peer B writes (at the same time)
+gun.get('counter').put({value: 2});
+
+// GUN uses state (timestamps) to resolve conflicts
+// The write with the higher timestamp wins
+```
+
+<Note>
+  GUN uses CRDTs (Conflict-free Replicated Data Types) to automatically resolve conflicts. Learn more in [CRDT Concepts](/concepts/crdt).
+</Note>
+
+### Gossip Protocol
+
+Peers "gossip" data to each other:
+
+1. Peer A writes data
+2. Peer A tells its neighbors
+3. Those neighbors tell their neighbors
+4. Data spreads through the entire mesh
+
+```javascript
+// Peer network visualization
+A writes → B, C hear it
+         → B tells D, E
+         → C tells F, G
+         → Eventually all peers have the data
+```
+
+## Relay Peers
+
+While GUN is peer-to-peer, **relay peers** help browsers connect to each other:
+
+### Why Relays?
+
+Browsers can't directly connect to other browsers due to NAT/firewall restrictions. Relays bridge this gap:
+
+```javascript
+// Browser can't connect directly to browser
+Browser A ✗ Browser B
+
+// But can connect via relay
+Browser A ←→ Relay ←→ Browser B
+```
+
+### Setting Up a Relay
+
+```javascript
+// server.js
+const Gun = require('gun');
+const http = require('http');
+
+const server = http.createServer().listen(8765);
+
+Gun({web: server});
+
+console.log('Relay peer running on port 8765');
+```
+
+<Tip>
+  You can run multiple relays for redundancy. If one goes down, peers automatically use the others.
+</Tip>
+
+### Connecting to Relays
+
+```javascript
+// Client connects to multiple relays
+var gun = Gun([
+  'https://relay1.example.com/gun',
+  'https://relay2.example.com/gun'
+]);
+
+// Gun automatically load-balances and fails over
+```
+
+## Peer Communication
+
+From `src/mesh.js`, peers communicate over various transports:
+
+### WebSocket (Browser ↔ Server)
+
+```javascript
+// Automatically uses WebSocket when available
+var gun = Gun('wss://relay.example.com/gun');
+
+// GUN handles connection, reconnection, and buffering
+```
+
+### HTTP Long-Polling (Fallback)
+
+If WebSocket fails, GUN falls back to HTTP polling.
+
+### In-Memory (Same Process)
+
+```javascript
+// Two GUN instances in same process share mesh
+var gun1 = Gun();
+var gun2 = Gun();
+
+// They automatically sync
+gun1.get('test').put({msg: 'hello'});
+gun2.get('test').on(data => console.log(data)); // {msg: 'hello'}
+```
+
+## Network Partitions
+
+GUN handles network splits gracefully:
+
+```javascript
+// Network splits into two partitions
+[Peer A, Peer B] ↮ [Peer C, Peer D]
+
+// Each partition continues working independently
+Peer A writes: {value: 'x'}
+Peer C writes: {value: 'y'}
+
+// When network heals
+[Peer A, Peer B] ←→ [Peer C, Peer D]
+
+// GUN's CRDT resolution handles conflicts automatically
+// The write with higher timestamp wins
+```
+
+<Info>
+  GUN is **partition tolerant** (the 'P' in CAP theorem). It continues working even when the network splits.
+</Info>
+
+## Decentralized by Design
+
+### Benefits
+
+<CardGroup cols={2}>
+  <Card title="No Single Point of Failure" icon="shield-check">
+    If one peer goes down, others keep working
+  </Card>
+  
+  <Card title="Scalability" icon="chart-line">
+    More peers = more capacity, no bottleneck
+  </Card>
+  
+  <Card title="Low Latency" icon="clock">
+    Read from nearest peer, no round trip to central server
+  </Card>
+  
+  <Card title="Censorship Resistant" icon="lock">
+    No central authority can block or delete data
+  </Card>
+</CardGroup>
+
+### Trade-offs
+
+- **Eventual consistency** instead of immediate consistency
+- **Higher complexity** in conflict resolution
+- **More bandwidth** usage (gossiping data)
+- **Storage** on multiple peers
+
+## Example: Decentralized Chat
+
+```javascript
+// Each user runs this code
+var gun = Gun(['https://relay.chat.app/gun']);
+
+var chat = gun.get('chatroom');
+
+// Send message (writes to local peer + broadcasts)
+chat.get('messages').set({
+  from: 'alice',
+  text: 'Hello world!',
+  time: Date.now()
+});
+
+// Receive messages (from any peer in mesh)
+chat.get('messages').map().on(msg => {
+  console.log(`${msg.from}: ${msg.text}`);
+});
+
+// Works even if relay goes down!
+// If offline, queues messages and syncs when back online
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Run multiple relays">
+    Don't rely on a single relay. Run 2-3 for redundancy.
+  </Step>
+  
+  <Step title="Use relay arrays">
+    ```javascript
+    var gun = Gun([
+      'https://relay1.com/gun',
+      'https://relay2.com/gun'
+    ]);
+    ```
+  </Step>
+  
+  <Step title="Handle offline gracefully">
+    GUN works offline automatically, but inform users when disconnected.
+  </Step>
+  
+  <Step title="Monitor mesh health">
+    Track connected peers and relay status in production apps.
+  </Step>
+</Steps>
+
+## Performance
+
+From the GUN source, mesh performance characteristics:
+
+- Message deduplication is O(1) using hash lookups
+- Routing is O(peers) but bounded by connection limits
+- Bandwidth scales with number of peers
+- CPU usage is minimal thanks to async event-driven architecture
+
+<Warning>
+  Broadcasting to thousands of direct peers can be expensive. Use relay peers to form a hierarchical mesh topology for large networks.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Realtime Sync" icon="sync" href="/concepts/realtime-sync">
+    Learn how GUN syncs data in realtime
+  </Card>
+  
+  <Card title="Offline-First" icon="wifi-slash" href="/concepts/offline-first">
+    Discover how GUN works offline
+  </Card>
+</CardGroup>
